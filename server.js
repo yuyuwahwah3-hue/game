@@ -235,7 +235,14 @@ const server = http.createServer((req, res) => {
   res.end("Perang Strategi server OK\n");
 });
 
-const wss = new WebSocketServer({ server, maxPayload: 2 * 1024 * 1024 }); // foto sudah dikecilkan client (~10 KB); batas longgar agar koneksi tidak diputus diam-diam
+// Kompresi per-pesan (permessage-deflate): snapshot JSON ~77% lebih kecil. Level rendah = hemat CPU server.
+// Bisa dimatikan lewat env WS_COMPRESS=0 kalau CPU Railway terasa berat.
+const COMPRESS = process.env.WS_COMPRESS !== "0";
+const wss = new WebSocketServer({
+  server,
+  maxPayload: 2 * 1024 * 1024, // foto sudah dikecilkan client (~10 KB); batas longgar agar koneksi tidak diputus diam-diam
+  perMessageDeflate: COMPRESS ? { zlibDeflateOptions: { level: 3 }, threshold: 512, serverNoContextTakeover: true, clientNoContextTakeover: true } : false,
+});
 wss.on("connection", (ws) => {
   ws.isAlive = true; ws.room = null; ws.slot = -1;
   ws.on("pong", () => { ws.isAlive = true; });

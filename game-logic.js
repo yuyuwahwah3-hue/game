@@ -20,7 +20,12 @@ var mpIsHost=false,mpMyOwner=0,mpGameStarted=false,mpEnded=false;
 var mpWs=null,mpPlayers=[null,null,null,null],mpPhotoImgs=[null,null,null,null];
 var pgens=[null,null,null,null]; // referensi jenderal tiap owner (diisi dari snapshot)
 var mpRespawnLeft=[0,0,0,0],mpGameMin=0;
-var mpSnapPrev=null,mpSnapCur=null,mpSnapTime=0,mpSnapInterval=100; // utk interpolasi
+var mpSnapPrev=null,mpSnapCur=null,mpSnapTime=0,mpSnapInterval=100; // (dipertahankan utk kompatibilitas)
+// Interpolasi: gambar bidak di posisi 'agak lampau' (mpRenderDelay) di antara 2 snapshot yg sudah diterima,
+// sehingga selalu ada 2 titik utk digeser LURUS. Delay menyesuaikan jitter jaringan secara otomatis.
+var mpHist=[];                 // riwayat snapshot: {t:waktu terima(ms), m:{id:[x,y,a]}}
+var mpRenderDelay=140;         // ms; dinaikkan otomatis kalau jaringan bergoyang, diturunkan pelan kalau stabil
+var mpLastArrive=0,mpJitter=0; // utk hitung goyangan jaringan
 var mpHudDirty=false;
 var SERVER_URL=(window.WAR_SERVER_URL||"wss://GANTI-DENGAN-DOMAIN-RAILWAY.up.railway.app");
 
@@ -84,6 +89,16 @@ function mpOnSnapshot(m){
  for(var i=0;i<m.ids.length;i++)idx[m.ids[i]]=m.p[i];
  mpSnapCur={ids:m.ids,p:m.p,idx:idx};
  mpSnapTime=now;
+ var pm={};for(var hi=0;hi<m.ids.length;hi++){var dd=m.p[hi];pm[m.ids[hi]]=[dd[0],dd[1],dd[2]]}
+ mpHist.push({t:now,m:pm});
+ if(mpHist.length>6)mpHist.shift();
+ if(mpLastArrive){
+  var gap=now-mpLastArrive,dev=Math.abs(gap-mpSnapInterval);
+  mpJitter=mpJitter*0.9+dev*0.1;                       // rata-rata bergerak simpangan jeda antar snapshot
+  var want=Math.max(110,Math.min(400,mpSnapInterval*1.3+mpJitter*2.5));
+  mpRenderDelay+=(want-mpRenderDelay)*0.05;            // naik/turun pelan supaya tidak terasa berubah-ubah
+ }
+ mpLastArrive=now;
  for(var k=0;k<m.t.length&&k<tr.length;k++)tr[k].tm=m.t[k]?"p":"e";
  // Siapkan pc tetap (indeks = indeks asli server, agar sel/perintah cocok). Bidak tak terlihat => hidden.
  var maxId=0;for(var q=0;q<m.ids.length;q++)if(m.ids[q]>maxId)maxId=m.ids[q];
@@ -111,16 +126,24 @@ function mpOnSnapshot(m){
 
 // Interpolasi halus antar snapshot (dipanggil tiap frame render)
 function mpInterpolate(){
- if(!mpSnapCur)return;
- var k=Math.min(1,(performance.now()-mpSnapTime)/mpSnapInterval);
- for(var i=0;i<mpSnapCur.ids.length;i++){
-  var o=pc[mpSnapCur.ids[i]];
-  if(o.tx===undefined)continue;
-  // bergerak menuju target snapshot dgn halus (lerp sisa jarak), sudut lewat jalur terpendek
-  o.x+=(o.tx-o.x)*Math.min(1,0.35+k*0.3);
-  o.y+=(o.ty-o.y)*Math.min(1,0.35+k*0.3);
-  var da=o.ta-o.a;while(da>Math.PI)da-=Math.PI*2;while(da<-Math.PI)da+=Math.PI*2;
-  o.a+=da*0.4;
+ if(mpHist.length<2)return;
+ var rt=performance.now()-mpRenderDelay;              // waktu yg ingin ditampilkan (sedikit di masa lalu)
+ // cari dua snapshot yg mengapit rt
+ var h0=mpHist[0],h1=mpHist[1],i;
+ for(i=0;i<mpHist.length-1;i++){ if(mpHist[i+1].t>=rt){h0=mpHist[i];h1=mpHist[i+1];break} h0=mpHist[i];h1=mpHist[i+1] }
+ var span=h1.t-h0.t; var k=span>0?(rt-h0.t)/span:1;
+ // k<0: kita lebih lama dari riwayat -> tahan di h0. k>1: paket telat -> ekstrapolasi terbatas (maks 25%) lalu tahan
+ if(k<0)k=0; else if(k>1.25)k=1.25;
+ var ids=mpSnapCur.ids;
+ for(var n=0;n<ids.length;n++){
+  var id=ids[n],o=pc[id],a=h0.m[id],b=h1.m[id];
+  if(!o||!b)continue;
+  if(!a){o.x=b[0];o.y=b[1];o.a=b[2];continue}      // baru muncul di snapshot ini: langsung di tempat
+  var dx=b[0]-a[0],dy=b[1]-a[1];
+  if(dx*dx+dy*dy>90000){o.x=b[0];o.y=b[1];o.a=b[2];continue} // lompat jauh (respawn/teleport): jangan diseret
+  o.x=a[0]+dx*k;o.y=a[1]+dy*k;
+  var da=b[2]-a[2];while(da>Math.PI)da-=Math.PI*2;while(da<-Math.PI)da+=Math.PI*2;
+  o.a=a[2]+da*k;
  }
 }
 
