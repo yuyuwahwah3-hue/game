@@ -97,7 +97,7 @@ function joinMatchmaking(ws, msg) {
   }
   const slot = room.clients.findIndex((c) => !c);
   room.clients[slot] = ws;
-  room.players[slot] = { name: String(msg.name || "Jenderal").slice(0, 20), photo: typeof msg.photo === "string" && msg.photo.length < 400000 ? msg.photo : null };
+  room.players[slot] = { name: String(msg.name || "Jenderal").slice(0, 20), photo: typeof msg.photo === "string" && msg.photo.length < 150000 ? msg.photo : null };
   ws.room = room; ws.slot = slot;
   send(ws, { type: "assignOwner", owner: slot, room: room.id });
 
@@ -235,7 +235,7 @@ const server = http.createServer((req, res) => {
   res.end("Perang Strategi server OK\n");
 });
 
-const wss = new WebSocketServer({ server, maxPayload: 600 * 1024 });
+const wss = new WebSocketServer({ server, maxPayload: 2 * 1024 * 1024 }); // foto sudah dikecilkan client (~10 KB); batas longgar agar koneksi tidak diputus diam-diam
 wss.on("connection", (ws) => {
   ws.isAlive = true; ws.room = null; ws.slot = -1;
   ws.on("pong", () => { ws.isAlive = true; });

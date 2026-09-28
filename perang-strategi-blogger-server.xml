@@ -165,7 +165,7 @@ canvas{display:block}
 
 
 <!-- ISI ALAMAT SERVER RAILWAY KAMU DI BARIS INI (satu-satunya yang perlu diganti). Pakai wss:// bukan https:// -->
-<script>window.WAR_SERVER_URL="wss://GANTI-DENGAN-DOMAIN-RAILWAY.up.railway.app";</script>
+<script>window.WAR_SERVER_URL="wss://game-production-8723.up.railway.app";</script>
 <script src="https://cdn.jsdelivr.net/gh/yuyuwahwah3-hue/game@main/game-logic.js"></script>
 <script src="https://cdn.jsdelivr.net/gh/yuyuwahwah3-hue/game@main/lobby.js"></script>
 </body>

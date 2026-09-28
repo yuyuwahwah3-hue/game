@@ -36,9 +36,18 @@ function mpSend(o){ if(mpWs&&mpWs.readyState===1) mpWs.send(JSON.stringify(o)) }
 function mpConnect(name,photo,onStatus){
  onStatus("Menyambung ke server...");
  try{ mpWs=new WebSocket(SERVER_URL) }catch(e){ onStatus("Alamat server tidak valid."); return }
- mpWs.onopen=function(){ onStatus("Mencari match..."); mpSend({type:"find",name:name,photo:photo}) };
- mpWs.onerror=function(){ onStatus("Gagal terhubung ke server.") };
- mpWs.onclose=function(){ if(mpGameStarted&&!mpEnded) mpShowGameEnd("KONEKSI KE SERVER TERPUTUS"); else if(!mpGameStarted) onStatus("Koneksi terputus. Coba lagi.") };
+ var opened=false;
+ var connTimer=setTimeout(function(){ if(!opened){ onStatus("Server tidak merespons (10 dtk). Cek alamat server / coba lagi."); if(window.mpLobbyBusy)window.mpLobbyBusy(); try{mpWs.close()}catch(e){} } },10000);
+ mpWs.onopen=function(){ opened=true;clearTimeout(connTimer);onStatus("Mencari match..."); mpSend({type:"find",name:name,photo:photo}) };
+ mpWs.onerror=function(){ clearTimeout(connTimer);onStatus("Gagal terhubung ke server. Cek alamat wss:// dan koneksi internet."); if(window.mpLobbyBusy)window.mpLobbyBusy() };
+ mpWs.onclose=function(ev){
+  clearTimeout(connTimer);
+  if(mpGameStarted&&!mpEnded) mpShowGameEnd("KONEKSI KE SERVER TERPUTUS");
+  else if(!mpGameStarted){
+   onStatus(ev&&ev.code===1009?"Data terlalu besar (foto profil). Pilih foto lain atau tanpa foto.":"Koneksi ke server terputus (kode "+(ev?ev.code:"?")+"). Coba lagi.");
+   if(window.mpLobbyBusy)window.mpLobbyBusy();
+  }
+ };
  mpWs.onmessage=function(ev){
   var m; try{m=JSON.parse(ev.data)}catch(e){return}
   if(m.type==="assignOwner"){ mpMyOwner=m.owner }

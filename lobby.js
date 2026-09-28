@@ -9,7 +9,15 @@
   var rd=new FileReader();
   rd.onload=function(){
    var im=new Image();
-   im.onload=function(){playerPhotoImg=im;playerPhotoDataURL=rd.result};
+   im.onload=function(){
+    // Kecilkan ke maks 128x128 (potong tengah, persegi) & kompres JPEG. Foto asli dari HP bisa 3-5 MB,
+    // terlalu besar utk dikirim lewat WebSocket (server memutus koneksi di atas ~600 KB).
+    var S=128,cv2=document.createElement("canvas");cv2.width=S;cv2.height=S;
+    var c2=cv2.getContext("2d"),side=Math.min(im.width,im.height);
+    c2.drawImage(im,(im.width-side)/2,(im.height-side)/2,side,side,0,0,S,S);
+    var small=cv2.toDataURL("image/jpeg",0.8);
+    var im2=new Image();im2.onload=function(){playerPhotoImg=im2;playerPhotoDataURL=small};im2.src=small;
+   };
    im.src=rd.result;
    imgEl.src=rd.result;imgEl.style.display="block";ph.style.display="none";
   };
