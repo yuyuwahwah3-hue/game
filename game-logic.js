@@ -11,183 +11,112 @@ var GEN_SIGHT=1000; // jarak pandang jendral pemain (unit dunia) - bidak/musuh y
 // dunia, tak peduli tergambar atau tidak) & tetap bisa diperintah gerak spt biasa.
 var playerName="Jenderal",playerPhotoImg=null,playerPhotoDataURL=null; // nama & foto profil jendral pemain, diisi dari halaman awal (#ov)
 
-// ====== MULTIPLAYER (host-authoritative P2P via PeerJS) ======
-// owner: 0-3, indeks slot pemain. mpMyOwner = slot pemain LOKAL (browser ini).
-// Host (owner 0) menjalankan simulasi penuh (update/AI/fisika) & broadcast state ke semua client.
-// Client cuma kirim perintah (klik/drag/formasi) ke host & render state yg diterima.
+// ====== MULTIPLAYER (server dedicated via WebSocket) ======
+// Server (Railway) menjalankan SELURUH simulasi. Client hanya: kirim input, terima snapshot,
+// interpolasi supaya gerak halus, lalu render() asli.
 var OWNER_COLORS=["#d4a832","#4488ff","#44c470","#a86633"]; // kuning, biru, hijau, coklat (bukan merah - sama dgn warna musuh)
 var OWNER_NAMES=["Jenderal 1","Jenderal 2","Jenderal 3","Jenderal 4"];
-var mpIsHost=false,mpPeer=null,mpMyOwner=0,mpGameStarted=false;
-var mpConns=[null,null,null,null]; // host: koneksi ke tiap client (indeks by owner)
-var mpHostConn=null; // client: koneksi tunggal ke host
-var mpPlayers=[null,null,null,null]; // {name,photo} per owner slot
-var mpPhotoImgs=[null,null,null,null]; // Image() per owner, dipakai render jenderal masing2
-var mpGameStartTime=0; // performance.now() saat mpEnterGame() dipanggil, dasar hitung waktu respawn
-var mpRespawnTimers=[0,0,0,0]; // epoch ms kapan owner boleh respawn (0 = tidak sedang menunggu)
-var mpEnded=false;
-
-function mpRespawnOwner(ownerIdx){
- // Bidak lama owner ini TIDAK di-splice (menghapus elemen menggeser semua indeks pc, padahal
- // banyak state menyimpan indeks: sel, pgenIdxBase owner lain, dll). Cukup tandai mati/tak tampil,
- // lalu spawn 25 bidak+jendral baru di akhir array pc di markas asal owner (OWNER_HOME).
- for(var qi=0;qi<pc.length;qi++){
-  var o=pc[qi];
-  if(o.owner===ownerIdx&&o.t==="p"&&o.al){o.al=false;o.hp=0}
- }
- var home=OWNER_HOME[ownerIdx]||{x:1400,y:2243};
- spawnOwnerGroup(ownerIdx,home.x,home.y);
- if(ownerIdx===mpMyOwner){ pgenIdx=pgenIdxBase[mpMyOwner];pgen=pc[pgenIdx]; sel.clear();uSI(); tK("Jenderalmu respawn dgn 25 bidak baru!") }
-}
-
-function mpRespawnDelaySec(){
- // menit_ke_berapa_game_berjalan x 5 detik (menit1=5s, menit5=25s), dibatasi maks 120s
- var minutes=(performance.now()-mpGameStartTime)/60000;
- return Math.min(120,Math.max(5,minutes*5));
-}
-
-function mpBroadcast(msg){ for(var i=0;i<4;i++) if(mpConns[i]) mpConns[i].send(msg) }
-function mpBroadcastLobby(){ mpBroadcast({type:"lobby",players:mpPlayers}) }
-
-// ====== SINKRONISASI STATE (host -> client) ======
-// Host mengirim snapshot ringkas array pc & tr tiap beberapa frame (bukan tiap frame, utk hemat
-// bandwidth). Client TIDAK simulasi sendiri (lihat gl()), cuma timpa pc/tr lokal dgn data ini.
-var MP_BROADCAST_HZ=12;
-var mpLastBroadcastT=0;
-
-function mpSerializePc(){
- // Kirim field minimal yg dibutuhkan utk render+HUD, bukan seluruh object (banyak field internal
- // AI/physics yg cuma relevan utk host, tak perlu dikirim - hemat bandwidth signifikan).
- var out=new Array(pc.length);
- for(var i=0;i<pc.length;i++){
-  var p=pc[i];
-  out[i]=[p.x,p.y,p.a,p.t,p.i,p.hp,p.mhp,p.gen?1:0,p.al?1:0,p.hidden?1:0,p.owner,p.hf,p.ord||"",p.tgt?1:0,p.orbiting?1:0,p.rt?1:0,p.obey?1:0];
- }
- return out;
-}
-function mpDeserializePc(arr){
- // Rekonstruksi objek pc dari data ringkas host. Field yg tak dikirim (internal AI dll) diisi default
- // aman krn client tak pernah menjalankan simulasi/AI thd objek ini (cuma dipakai utk render & seleksi).
- var out=new Array(arr.length);
- for(var i=0;i<arr.length;i++){
-  var a=arr[i];
-  out[i]={x:a[0],y:a[1],a:a[2],t:a[3],i:a[4],hp:a[5],mhp:a[6],gen:!!a[7],al:!!a[8],hidden:!!a[9],owner:a[10],hf:a[11],ord:a[12]||null,tgt:a[13]?true:null,orbiting:a[14]?true:null,rt:!!a[15],obey:!!a[16],form:null,formAng:0};
- }
- return out;
-}
-function mpSerializeTr(){
- var out=new Array(tr.length);
- for(var i=0;i<tr.length;i++){var te=tr[i];out[i]=[te.tm,te.st||""]}
- return out;
-}
-function mpApplyTrLite(arr){
- for(var i=0;i<arr.length&&i<tr.length;i++){tr[i].tm=arr[i][0];tr[i].st=arr[i][1]||tr[i].st}
-}
-
-function mpTickBroadcast(t){
- if(t-mpLastBroadcastT<1000/MP_BROADCAST_HZ)return;
- mpLastBroadcastT=t;
- var pa=0;for(var i=0;i<pc.length;i++)if(pc[i].al&&pc[i].t==="p")pa++;
- var cp=0;for(var i=0;i<tr.length;i++)if(tr[i].tm==="p")cp++;
- mpBroadcast({
-  type:"state",
-  pc:mpSerializePc(),
-  tr:mpSerializeTr(),
-  pa:pa,
-  hudGH:pgens[0]?Math.max(0,Math.round((pgens[0].hp/pgens[0].mhp)*100)):0, // dikirim per-owner di bawah, ini fallback
-  gensHp:[0,1,2,3].map(function(oi){var g=pgens[oi];return g?Math.round(g.hp/g.mhp*100):0}),
-  gensAl:[0,1,2,3].map(function(oi){var g=pgens[oi];return g?g.al:false}),
-  cp:cp,
-  go:go
- });
-}
-
-function mpApplyHostState(msg){
- pc=mpDeserializePc(msg.pc);
- mpApplyTrLite(msg.tr);
- for(var oi=0;oi<4;oi++){
-  pgens[oi]=null;
-  // Ambil jendral TERBARU milik owner ini (iterasi dari belakang): setelah respawn, jendral lama yg
-  // sudah mati masih ada di array (tdk di-splice), jadi jendral baru selalu ada di indeks lebih besar.
-  for(var qi=pc.length-1;qi>=0;qi--){if(pc[qi].owner===oi&&pc[qi].gen&&pc[qi].t==="p"){pgens[oi]=pc[qi];break}}
- }
- pgen=pgens[mpMyOwner];
- document.getElementById("pC").textContent=msg.pa;
- document.getElementById("tC").textContent=msg.cp+"/20";
- if(pgen)document.getElementById("gH").textContent=msg.gensHp[mpMyOwner];
- if(msg.go&&!mpEnded){ mpShowGameEnd(msg.pa===0?"KEKALAHAN TOTAL":"KEMENANGAN!") }
-}
-
-// ====== INPUT (client -> host) ======
-// Client mengirim perintah gerak/serang/formasi milik bidak DIA SENDIRI (owner===mpMyOwner) ke host;
-// host yg mengeksekusi perintah itu thd pc lokal-nya (authoritative). Host sendiri (owner 0) langsung
-// eksekusi perintah lokal tanpa lewat network (lihat pemanggilan mpSendOrApplyInput di handler klik).
-function mpSendOrApplyInput(cmdType,payload){
- if(mpIsHost){
-  mpApplyRemoteInput(mpMyOwner,{cmd:cmdType,payload:payload});
- } else if(mpHostConn){
-  mpHostConn.send({type:"input",cmd:cmdType,payload:payload});
- }
-}
-function mpApplyRemoteInput(ownerIdx,msg){
- // msg: {cmd,payload}. Cuma berlaku thd bidak milik ownerIdx tsb (dicek ulang di sisi host demi keamanan
- // dasar - client nakal secara teori bisa kirim ownerIdx palsu, tp krn ownerIdx diambil dari koneksi
- // conn yg sudah terikat slot saat handshake di mpHandleHostMessage, bukan dari isi pesan, ini aman).
- if(msg.cmd==="orderMove"){
-  var pl=msg.payload;
-  var savedSel=sel,savedFormMode=formMode,savedMoveMode=moveMode;
-  sel=new Set();
-  for(var k=0;k<pl.ids.length;k++){
-   var p=pc[pl.ids[k]];
-   if(p&&p.owner===ownerIdx&&p.t==="p")sel.add(pl.ids[k]);
-  }
-  formMode=pl.formMode;moveMode=pl.moveMode;
-  if(sel.size>0)orderMove(pl.bx,pl.by);
-  sel=savedSel;formMode=savedFormMode;moveMode=savedMoveMode;
- }
-}
+var mpIsHost=false,mpMyOwner=0,mpGameStarted=false,mpEnded=false;
+var mpWs=null,mpPlayers=[null,null,null,null],mpPhotoImgs=[null,null,null,null];
+var pgens=[null,null,null,null]; // referensi jenderal tiap owner (diisi dari snapshot)
+var mpRespawnLeft=[0,0,0,0],mpGameMin=0;
+var mpSnapPrev=null,mpSnapCur=null,mpSnapTime=0,mpSnapInterval=100; // utk interpolasi
+var mpHudDirty=false;
+var SERVER_URL=(window.WAR_SERVER_URL||"wss://GANTI-DENGAN-DOMAIN-RAILWAY.up.railway.app");
 
 function mpLoadPhotoImgs(){
  for(var i=0;i<4;i++){
   var pl=mpPlayers[i];
-  if(pl&&pl.photo&&!mpPhotoImgs[i]){
-   var im=new Image();im.src=pl.photo;mpPhotoImgs[i]=im;
-  } else if(!pl){ mpPhotoImgs[i]=null }
+  if(pl&&pl.photo&&!mpPhotoImgs[i]){var im=new Image();im.src=pl.photo;mpPhotoImgs[i]=im}
+  else if(!pl){mpPhotoImgs[i]=null}
  }
+}
+function mpSend(o){ if(mpWs&&mpWs.readyState===1) mpWs.send(JSON.stringify(o)) }
+
+function mpConnect(name,photo,onStatus){
+ onStatus("Menyambung ke server...");
+ try{ mpWs=new WebSocket(SERVER_URL) }catch(e){ onStatus("Alamat server tidak valid."); return }
+ mpWs.onopen=function(){ onStatus("Mencari match..."); mpSend({type:"find",name:name,photo:photo}) };
+ mpWs.onerror=function(){ onStatus("Gagal terhubung ke server.") };
+ mpWs.onclose=function(){ if(mpGameStarted&&!mpEnded) mpShowGameEnd("KONEKSI KE SERVER TERPUTUS"); else if(!mpGameStarted) onStatus("Koneksi terputus. Coba lagi.") };
+ mpWs.onmessage=function(ev){
+  var m; try{m=JSON.parse(ev.data)}catch(e){return}
+  if(m.type==="assignOwner"){ mpMyOwner=m.owner }
+  else if(m.type==="busy"){ onStatus(m.message); if(window.mpLobbyBusy)window.mpLobbyBusy() }
+  else if(m.type==="lobby"){
+   mpPlayers=m.players;mpLoadPhotoImgs();
+   var n=0;for(var i=0;i<4;i++)if(mpPlayers[i])n++;
+   var s=Math.ceil((m.startsInMs||0)/1000);
+   onStatus("Menunggu pemain ("+n+"/4)"+(m.startsInMs!=null?" — mulai dlm "+s+" dtk":""));
+   if(window.mpRenderLobbyList)window.mpRenderLobbyList();
+  }
+  else if(m.type==="start"){
+   mpPlayers=m.players;mpLoadPhotoImgs();mpGameStarted=true;
+   document.getElementById("ov").classList.add("hd");
+   mpEnterGame();
+  }
+  else if(m.type==="state"){ mpOnSnapshot(m) }
+  else if(m.type==="end"){ mpShowGameEnd(m.reason) }
+ };
 }
 
-function mpHandleHostMessage(ownerIdx,conn,msg){
- if(msg.type==="hello"){
-  mpPlayers[ownerIdx]={name:msg.name.slice(0,20),photo:msg.photo};
-  mpLoadPhotoImgs();
-  conn.send({type:"assignOwner",owner:ownerIdx}); // KRUSIAL: beri tahu client ini dia dpt slot ke berapa
-  if(window.mpRenderLobbyList)window.mpRenderLobbyList();
-  mpBroadcastLobby();
- } else if(msg.type==="input" && mpGameStarted){
-  mpApplyRemoteInput(ownerIdx,msg);
- }
-}
-function mpHandleClientMessage(msg){
- if(msg.type==="full"){ if(window.mpSetStatus)window.mpSetStatus("Room penuh (maks 4 pemain)."); return }
- if(msg.type==="assignOwner"){ mpMyOwner=msg.owner; if(window.mpRenderLobbyList)window.mpRenderLobbyList(); }
- if(msg.type==="lobby"){ mpPlayers=msg.players;mpLoadPhotoImgs(); if(window.mpRenderLobbyList)window.mpRenderLobbyList(); }
- if(msg.type==="start"){
-  mpPlayers=msg.players;mpGameStarted=true;mpLoadPhotoImgs();
-  document.getElementById("ov").classList.add("hd");
-  mpEnterGame();
- }
- if(msg.type==="state"){ mpApplyHostState(msg) }
- if(msg.type==="end"){ mpShowGameEnd(msg.reason) }
-}
-function mpShowDisconnected(){
- mpEnded=true;
- var ov=document.getElementById("mpEndOv");
- if(ov){ document.getElementById("mpEndMsg").textContent="HOST TERPUTUS — PERANG BERAKHIR"; ov.classList.remove("hd"); }
-}
 function mpShowGameEnd(reason){
  mpEnded=true;
  var ov=document.getElementById("mpEndOv");
  if(ov){ document.getElementById("mpEndMsg").textContent=reason||"PERANG BERAKHIR"; ov.classList.remove("hd"); }
 }
+
+// Snapshot dari server -> bangun ulang pc (hanya bidak yg TERLIHAT). Posisi diinterpolasi di mpInterpolate().
+function mpOnSnapshot(m){
+ var now=performance.now();
+ if(mpSnapCur){ mpSnapInterval=Math.max(40,Math.min(300,now-mpSnapTime)); }
+ mpSnapPrev=mpSnapCur;
+ var idx={};
+ for(var i=0;i<m.ids.length;i++)idx[m.ids[i]]=m.p[i];
+ mpSnapCur={ids:m.ids,p:m.p,idx:idx};
+ mpSnapTime=now;
+ for(var k=0;k<m.t.length&&k<tr.length;k++)tr[k].tm=m.t[k]?"p":"e";
+ // Siapkan pc tetap (indeks = indeks asli server, agar sel/perintah cocok). Bidak tak terlihat => hidden.
+ var maxId=0;for(var q=0;q<m.ids.length;q++)if(m.ids[q]>maxId)maxId=m.ids[q];
+ for(var j=0;j<m.gens.length;j++){var g=m.gens[j];if(g&&g[2]>maxId)maxId=g[2]}
+ while(pc.length<=maxId)pc.push({x:0,y:0,a:0,t:"e",i:-1,hp:0,mhp:100,gen:false,al:false,hidden:true,owner:0,hf:0,ord:null,tgt:null,orbiting:null,rt:false,obey:false,form:null,formAng:0,mem:0});
+ for(var n=0;n<pc.length;n++){ if(!idx[n]){ pc[n].al=false;pc[n].hidden=true } }
+ for(var r=0;r<m.ids.length;r++){
+  var id=m.ids[r],d=m.p[r],o=pc[id];
+  o.tx=d[0];o.ty=d[1];o.ta=d[2];
+  if(!o.al||o.hidden){o.x=d[0];o.y=d[1];o.a=d[2]} // baru muncul: langsung di posisi
+  o.t=d[3]?"p":"e";o.i=d[4];o.hp=d[5];o.mhp=d[6];o.gen=!!d[7];o.owner=d[8];o.hf=d[9]?0.2:0;o.ord=d[10]?"move":null;
+  o.al=true;o.hidden=false;
+ }
+ for(var oi=0;oi<4;oi++){ var gg=m.gens[oi]; pgens[oi]=(gg&&gg[0])?pc[gg[2]]:null; }
+ pgen=pgens[mpMyOwner];
+ mpRespawnLeft=m.rs;mpGameMin=m.min;
+ document.getElementById("pC").textContent=m.pa;
+ document.getElementById("tC").textContent=m.cp+"/20";
+ var eCnt=0;for(var e2=0;e2<m.p.length;e2++)if(!m.p[e2][3])eCnt++;
+ document.getElementById("eC").textContent=eCnt;
+ var me=m.gens[mpMyOwner];
+ document.getElementById("gH").textContent=me?me[1]:0;
+ if(m.toasts){for(var ti=0;ti<m.toasts.length;ti++)tK(m.toasts[ti])}
+}
+
+// Interpolasi halus antar snapshot (dipanggil tiap frame render)
+function mpInterpolate(){
+ if(!mpSnapCur)return;
+ var k=Math.min(1,(performance.now()-mpSnapTime)/mpSnapInterval);
+ for(var i=0;i<mpSnapCur.ids.length;i++){
+  var o=pc[mpSnapCur.ids[i]];
+  if(o.tx===undefined)continue;
+  // bergerak menuju target snapshot dgn halus (lerp sisa jarak), sudut lewat jalur terpendek
+  o.x+=(o.tx-o.x)*Math.min(1,0.35+k*0.3);
+  o.y+=(o.ty-o.y)*Math.min(1,0.35+k*0.3);
+  var da=o.ta-o.a;while(da>Math.PI)da-=Math.PI*2;while(da<-Math.PI)da+=Math.PI*2;
+  o.a+=da*0.4;
+ }
+}
+
+// ====== INPUT (client -> server) ======
+function mpSendOrApplyInput(cmdType,payload){ mpSend({type:"input",cmd:cmdType,payload:payload}) }
 
 // PETA LATAR (gambar acuan dunia nyata, dipakai sbg background & acuan bentuk wilayah)
 var bgImg=new Image();
@@ -827,12 +756,8 @@ function orderMove(bx,by){
 
  if(sel.size===0)return;
 
- if(!mpIsHost){
-  // CLIENT: jangan eksekusi formasi/gid lokal (state itu cuma valid & konsisten di host). Kirim
-  // idx yg diseleksi + parameter (formMode/moveMode) ke host, host yg panggil orderMove() aslinya.
-  mpSendOrApplyInput("orderMove",{ids:Array.from(sel),bx:bx,by:by,formMode:formMode,moveMode:moveMode});
-  return;
- }
+ mpSendOrApplyInput("orderMove",{ids:Array.from(sel),bx:bx,by:by,formMode:formMode,moveMode:moveMode});
+ return;
 
  var idxs=Array.from(sel);
  var gIdx=-1;
@@ -2586,6 +2511,19 @@ function render(){
 
 // GAME LOOP
 
+// HUD respawn & menit: tampilkan hitung mundur kalau jenderal kita gugur
+function mpTickHud(){
+ var el=document.getElementById("mpRespawnHud");
+ if(!el){
+  el=document.createElement("div");el.id="mpRespawnHud";
+  el.style.cssText="position:fixed;top:44px;left:50%;transform:translateX(-50%);z-index:30;font:bold 13px monospace;color:#fff;background:rgba(0,0,0,.6);border:1px solid #c44040;padding:6px 14px;border-radius:4px;display:none;pointer-events:none";
+  document.body.appendChild(el);
+ }
+ var left=mpRespawnLeft[mpMyOwner]|0;
+ if(left>0&&!mpEnded){el.style.display="block";el.textContent="Jenderalmu gugur — respawn "+left+" dtk"}
+ else el.style.display="none";
+}
+
 function gl(t){
 
  if(mpEnded){requestAnimationFrame(gl);return}
@@ -2594,14 +2532,9 @@ function gl(t){
 
  lt=t;
 
- if(mpIsHost){
-  update(dt);
-  mpTickBroadcast(t);
- } else {
-  // Client: TIDAK menjalankan simulasi sendiri (physics/AI/combat host yg pegang kendali penuh),
-  // supaya tak pernah desync. Cuma proses input lokal (drag-select dsb tetap jalan di sisi client
-  // krn itu cuma UI, bukan simulasi) & render state yg terakhir diterima dari host.
- }
+ // Client TIDAK menjalankan simulasi (update). Server yg authoritative. Client hanya interpolasi + render.
+ mpInterpolate();
+ mpTickHud();
 
  render();
 
@@ -2612,10 +2545,9 @@ function gl(t){
 
 
 function mpEnterGame(){
- mpGameStartTime=performance.now();
  iTr();
  iRocks();
- iPc();
+ pc=[];
  lt=performance.now();
 
  var endOv=document.createElement("div");
