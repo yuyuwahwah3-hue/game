@@ -65,8 +65,7 @@
    mpConns[freeSlot]=conn;
    conn.on("data",function(msg){ mpHandleHostMessage(freeSlot,conn,msg) });
    conn.on("close",function(){ mpPlayers[freeSlot]=null;mpConns[freeSlot]=null;renderPlayerList();mpBroadcastLobby() });
-  });
-  mpPeer.on("error",function(err){ setStatus("Error: "+err.type) });
+  });  mpPeer.on("error",function(err){ setStatus("Error: "+err.type) });
  };
 
  bStart.onclick=function(){

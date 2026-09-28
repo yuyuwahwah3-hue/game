@@ -15,7 +15,7 @@ var playerName="Jenderal",playerPhotoImg=null,playerPhotoDataURL=null; // nama &
 // owner: 0-3, indeks slot pemain. mpMyOwner = slot pemain LOKAL (browser ini).
 // Host (owner 0) menjalankan simulasi penuh (update/AI/fisika) & broadcast state ke semua client.
 // Client cuma kirim perintah (klik/drag/formasi) ke host & render state yg diterima.
-var OWNER_COLORS=["#d4a832","#4488ff","#44c470","#c44040"]; // kuning, biru, hijau, merah
+var OWNER_COLORS=["#d4a832","#4488ff","#44c470","#a86633"]; // kuning, biru, hijau, coklat (bukan merah - sama dgn warna musuh)
 var OWNER_NAMES=["Jenderal 1","Jenderal 2","Jenderal 3","Jenderal 4"];
 var mpIsHost=false,mpPeer=null,mpMyOwner=0,mpGameStarted=false;
 var mpConns=[null,null,null,null]; // host: koneksi ke tiap client (indeks by owner)
@@ -27,12 +27,16 @@ var mpRespawnTimers=[0,0,0,0]; // epoch ms kapan owner boleh respawn (0 = tidak 
 var mpEnded=false;
 
 function mpRespawnOwner(ownerIdx){
- // Reset TOTAL: hapus semua bidak lama owner ini (mati atau baru dikonversi, dianggap gugur semua)
- // lalu spawn ulang 25 bidak+jendral baru di markas asalnya (OWNER_HOME).
- for(var qi=pc.length-1;qi>=0;qi--){ if(pc[qi].owner===ownerIdx&&pc[qi].t==="p") pc.splice(qi,1) }
- var home=OWNER_HOME[ownerIdx]||{x:1400,y:2210};
- var startIdx=spawnOwnerGroup(ownerIdx,home.x,home.y);
- if(ownerIdx===mpMyOwner){ pgenIdx=pgenIdxBase[mpMyOwner];pgen=pc[pgenIdx]; tK("Jenderalmu respawn dgn 25 bidak baru!") }
+ // Bidak lama owner ini TIDAK di-splice (menghapus elemen menggeser semua indeks pc, padahal
+ // banyak state menyimpan indeks: sel, pgenIdxBase owner lain, dll). Cukup tandai mati/tak tampil,
+ // lalu spawn 25 bidak+jendral baru di akhir array pc di markas asal owner (OWNER_HOME).
+ for(var qi=0;qi<pc.length;qi++){
+  var o=pc[qi];
+  if(o.owner===ownerIdx&&o.t==="p"&&o.al){o.al=false;o.hp=0}
+ }
+ var home=OWNER_HOME[ownerIdx]||{x:1400,y:2243};
+ spawnOwnerGroup(ownerIdx,home.x,home.y);
+ if(ownerIdx===mpMyOwner){ pgenIdx=pgenIdxBase[mpMyOwner];pgen=pc[pgenIdx]; sel.clear();uSI(); tK("Jenderalmu respawn dgn 25 bidak baru!") }
 }
 
 function mpRespawnDelaySec(){
@@ -102,7 +106,9 @@ function mpApplyHostState(msg){
  mpApplyTrLite(msg.tr);
  for(var oi=0;oi<4;oi++){
   pgens[oi]=null;
-  for(var qi=0;qi<pc.length;qi++){if(pc[qi].owner===oi&&pc[qi].gen&&pc[qi].t==="p"){pgens[oi]=pc[qi];break}}
+  // Ambil jendral TERBARU milik owner ini (iterasi dari belakang): setelah respawn, jendral lama yg
+  // sudah mati masih ada di array (tdk di-splice), jadi jendral baru selalu ada di indeks lebih besar.
+  for(var qi=pc.length-1;qi>=0;qi--){if(pc[qi].owner===oi&&pc[qi].gen&&pc[qi].t==="p"){pgens[oi]=pc[qi];break}}
  }
  pgen=pgens[mpMyOwner];
  document.getElementById("pC").textContent=msg.pa;
@@ -153,6 +159,7 @@ function mpHandleHostMessage(ownerIdx,conn,msg){
  if(msg.type==="hello"){
   mpPlayers[ownerIdx]={name:msg.name.slice(0,20),photo:msg.photo};
   mpLoadPhotoImgs();
+  conn.send({type:"assignOwner",owner:ownerIdx}); // KRUSIAL: beri tahu client ini dia dpt slot ke berapa
   if(window.mpRenderLobbyList)window.mpRenderLobbyList();
   mpBroadcastLobby();
  } else if(msg.type==="input" && mpGameStarted){
@@ -161,6 +168,7 @@ function mpHandleHostMessage(ownerIdx,conn,msg){
 }
 function mpHandleClientMessage(msg){
  if(msg.type==="full"){ if(window.mpSetStatus)window.mpSetStatus("Room penuh (maks 4 pemain)."); return }
+ if(msg.type==="assignOwner"){ mpMyOwner=msg.owner; if(window.mpRenderLobbyList)window.mpRenderLobbyList(); }
  if(msg.type==="lobby"){ mpPlayers=msg.players;mpLoadPhotoImgs(); if(window.mpRenderLobbyList)window.mpRenderLobbyList(); }
  if(msg.type==="start"){
   mpPlayers=msg.players;mpGameStarted=true;mpLoadPhotoImgs();
@@ -238,8 +246,7 @@ var pgenIdxBase=[22,72,122,172]; // indeks awal jenderal tiap owner di array pc 
 
 var cam={x:1450,y:2350,z:1};
 
-var SPD_N=1.5,SPD_F=3; // kecepatan normal & cepat (tombol "2x" = 2x dr kecepatan normal, bisa toggle balik)
-var spd=SPD_N,pau=false,go=false,lt=0;
+var spd=1.5,pau=false,go=false,lt=0; // kecepatan game TETAP (multiplayer - semua pemain harus jalan di kecepatan sama, tombol 2x dihapus)
 var moveMode="atk"; // "atk"=Serang (auto-target musuh sambil jalan), "goto"=jalan mutlak (tapi tetap damage musuh yg menghalangi)
 var formMode=null; // null|"globus"|"simplex"|"duplex"|"vshape"
 var simplexOri=0; // 0=horizontal,1=vertical (toggle tiap tekan "-")
@@ -397,18 +404,23 @@ function mkP(x,y,t,i){return{x:x,y:y,t:t,i:i,a:t==="p"?0:Math.PI,ox:x,oy:y,ord:n
 var OWNER_HOME=[null,null,null,null]; // {x,y} markas tiap owner, dipakai ulang saat respawn
 
 function spawnOwnerGroup(ownerIdx,homeX,homeY){
- // 25 bidak (termasuk 1 jendral) dlm barisan 5x5, ditata di sekitar homeX/homeY milik owner ini
+ // 25 bidak (termasuk 1 jendral) dlm barisan 6x4 (24 bidak biasa) + 1 baris tambahan berisi
+ // 1 bidak (jendral) di tengah bawah, ditata di sekitar homeX/homeY milik owner ini
  var startIdx=pc.length;
- for(var i=0;i<25;i++){
-  var rw=i%5,cl=Math.floor(i/5);
-  var p=mkP(homeX-80+rw*40+(Math.random()-.5)*10,homeY-80+cl*40+(Math.random()-.5)*10,"p",-1);
+ for(var i=0;i<24;i++){
+  var rw=i%6,cl=Math.floor(i/6);
+  var p=mkP(homeX-100+rw*40+(Math.random()-.5)*10,homeY-80+cl*40+(Math.random()-.5)*10,"p",-1);
   p.owner=ownerIdx;
   pc.push(p);
  }
- var gp=pc[startIdx+12]; // bidak tengah blok jadi jendral (indeks 12 dari 25, spt pgenIdx=22 utk 50 lama)
+ // bidak ke-25 (jendral): baris ke-5, di tengah horizontal blok 6 kolom
+ var genP=mkP(homeX-100+2.5*40+(Math.random()-.5)*10,homeY-80+4*40+(Math.random()-.5)*10,"p",-1);
+ genP.owner=ownerIdx;
+ pc.push(genP);
+ var gp=pc[startIdx+24]; // bidak ke-25 (indeks 24 dari 25) jadi jendral
  gp.gen=true;gp.hp=gp.mhp=400;gp.warn=false;
  pgens[ownerIdx]=gp;
- pgenIdxBase[ownerIdx]=startIdx+12;
+ pgenIdxBase[ownerIdx]=startIdx+24;
  OWNER_HOME[ownerIdx]={x:homeX,y:homeY};
  return startIdx;
 }
@@ -419,13 +431,16 @@ function iPc(){
 
  // 4 markas pemain berdampingan di sisi KIRI wilayah Sancang (dekat tepi laut), tetap terpisah
  // dari area spawn musuh yg dibatasi ke sisi KANAN Sancang (lihat SANCANG_SPLIT_X di bawah).
- // Titik Y (2055/2210/2365/2520) diverifikasi manual berada DI DALAM poligon Hutan Sancang utk
- // seluruh area blok 25 bidak (bukan cuma titik tengahnya) - X=1400 dgn Y di luar rentang ini
- // sebagian jatuh di luar poligon (mis. Y=1900 & Y=2740 pd percobaan awal, sudah diperbaiki).
- spawnOwnerGroup(0,1400,2055);
- spawnOwnerGroup(1,1400,2210);
- spawnOwnerGroup(2,1400,2365);
- spawnOwnerGroup(3,1400,2520);
+ // Titik Y (2110/2243/2377/2510) diverifikasi manual berada DI DALAM poligon Hutan Sancang utk
+ // seluruh area blok 6x4+1 bidak (bukan cuma titik tengahnya) - blok ini lebih lebar dari versi
+ // 5x5 sebelumnya jadi titik lama sebagian jatuh di luar poligon, sudah dihitung ulang.
+ // PENTING: cuma spawn owner yg SLOT-NYA TERISI (mpPlayers[oi] != null) - kalau cuma 2-3 pemain
+ // yg join & mulai, owner kosong TIDAK di-spawn sama sekali (bukan spawn lalu langsung dianggap
+ // "kalah"), supaya game bisa dimainkan berapa pun jumlah pemain (2, 3, atau 4).
+ var HOME_Y=[2110,2243,2377,2510];
+ for(var oi=0;oi<4;oi++){
+  if(mpPlayers[oi]) spawnOwnerGroup(oi,1400,HOME_Y[oi]);
+ }
 
  pgenIdx=pgenIdxBase[mpMyOwner];
  pgen=pc[pgenIdx];
@@ -973,11 +988,9 @@ function tK(m){var t=document.createElement("div");t.className="tk";t.textConten
 
 function sSp(s){
 
- if(s===0)pau=!pau;else{spd=s;pau=false}
+ if(s===0)pau=!pau;
 
  document.getElementById("bP").classList.toggle("ac",pau);
-
- document.getElementById("b2").classList.toggle("ac",!pau&&spd===SPD_F);
 
 }
 
@@ -986,8 +999,6 @@ function sSp(s){
 // TOMBOL
 
 document.getElementById("bP").onclick=function(){sSp(0)};
-
-document.getElementById("b2").onclick=function(){sSp(spd===SPD_F?SPD_N:SPD_F)};
 
 
 
@@ -2113,13 +2124,17 @@ function update(dt){
   var te=tr[t];if(!te.gp&&!te.gp2)continue;
   if(te.gp)te.gp.rt=false;if(te.gp2)te.gp2.rt=false;
   if(!(te.gp&&te.gp.al)&&!(te.gp2&&te.gp2.al)&&!te.conv){
-   te.conv=true;var nc=0,rrOwner=0; // round-robin: bidak yg beralih dibagi RATA ke 4 owner scr bergiliran
+   te.conv=true;var nc=0;
+   // round-robin: bidak yg beralih dibagi RATA hanya ke owner yg AKTIF (slot terisi) - owner
+   // kosong (mis. cuma main bertiga) dilewati, supaya tidak ada bidak "hilang" ke slot kosong.
+   var activeOwners=[];for(var oi=0;oi<4;oi++)if(mpPlayers[oi])activeOwners.push(oi);
+   var rrIdx=0;
    for(var qi=0;qi<pc.length;qi++){
     var q=pc[qi];
-    if(q.t==="e"&&q.i===t&&q.al){q.t="p";q.i=-1;q.owner=rrOwner;rrOwner=(rrOwner+1)%4;q.hidden=false;q.tgt=null;q.zone=null;q.ord=null;q.obey=false;q.form=null;q.gid=0;q.rt=false;q.holdBack=false;q.orbiting=null;q.cmd=false;q.role="atk";q.runner=false;q.hf=0.4;nc++}
+    if(q.t==="e"&&q.i===t&&q.al){q.t="p";q.i=-1;q.owner=activeOwners[rrIdx%activeOwners.length];rrIdx++;q.hidden=false;q.tgt=null;q.zone=null;q.ord=null;q.obey=false;q.form=null;q.gid=0;q.rt=false;q.holdBack=false;q.orbiting=null;q.cmd=false;q.role="atk";q.runner=false;q.hf=0.4;nc++}
    }
    for(var qi=0;qi<pc.length;qi++){var q=pc[qi];if(q.tgt&&q.tgt.t===q.t){q.tgt=null;q.zone=null;q.orbiting=null}}
-   tK('Jenderal '+te.rl+' dari '+te.nm+' gugur! '+nc+' pasukan dibagi rata ke 4 jenderal');
+   tK('Jenderal '+te.rl+' dari '+te.nm+' gugur! '+nc+' pasukan dibagi rata ke semua jenderal');
   }
  }
  // Hitung
@@ -2149,8 +2164,7 @@ function update(dt){
  for(var oi=0;oi<4;oi++){
   var og=pgens[oi];
   if(!og)continue;
-  var ownerAlive=false;
-  for(var qi=0;qi<pc.length;qi++){if(pc[qi].owner===oi&&pc[qi].t==="p"&&pc[qi].al){ownerAlive=true;break}}
+  var ownerAlive=og.al; // owner dianggap kalah saat JENDERAL-nya tumbang (sisa bidak ikut hangus saat respawn)
   if(!ownerAlive){
    if(mpRespawnTimers[oi]===0){
     mpRespawnTimers[oi]=nowMs+mpRespawnDelaySec()*1000;
@@ -2166,8 +2180,7 @@ function update(dt){
 
  var anyOwnerAlive=false;
  for(var oi=0;oi<4;oi++){
-  for(var qi=0;qi<pc.length;qi++){if(pc[qi].owner===oi&&pc[qi].t==="p"&&pc[qi].al){anyOwnerAlive=true;break}}
-  if(anyOwnerAlive)break;
+  if(pgens[oi]&&pgens[oi].al){anyOwnerAlive=true;break}
  }
 
  if(!anyOwnerAlive&&!go){go=true;tK("KEKALAHAN TOTAL! Semua jenderal gugur bersamaan")}
@@ -2489,7 +2502,7 @@ function render(){
    cx.textAlign="center";cx.textBaseline="alphabetic";
    var nmY=s.y-r-20*cam.z;
    cx.lineWidth=Math.max(2,3*cam.z);cx.strokeStyle="#000";cx.strokeText(gName,s.x,nmY);
-   cx.fillStyle=isMyGen?"#fff":ownerColor;cx.fillText(gName,s.x,nmY);
+   cx.fillStyle="#fff";cx.fillText(gName,s.x,nmY);
   }
 
   // Nama jendral musuh (penguasa wilayah) di atas badannya - sama gayanya spt nama player
