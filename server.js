@@ -149,7 +149,8 @@ function startRoom(room) {
     mpEnterGame();
   `, sb);
 
-  broadcast(room, { type: "start", room: room.id, players: room.players.map((p) => p && { name: p.name, photo: p.photo }) });
+  const zones = vm.runInContext("__zonesForClient()", sb);   // api/lumpur/air suci: dibuat di server, digambar di client
+  broadcast(room, { type: "start", room: room.id, zones, players: room.players.map((p) => p && { name: p.name, photo: p.photo }) });
 
   const dt = 1 / TICK_HZ;
   room.tickTimer = setInterval(() => tickRoom(room, dt), 1000 / TICK_HZ);
@@ -200,7 +201,22 @@ function sendSnapshot(room) {
   })()`, room.sb);
   snap.type = "state";
   const toasts = room.sb.__toasts; if (toasts.length) { snap.toasts = toasts.splice(0, toasts.length); }
-  broadcast(room, snap);
+  // 'JENDERAL TERANCAM!' hanya untuk pemilik jenderal yg bersangkutan (bukan disiarkan ke semua)
+  const warnQ = room.sb.__warnQ.splice(0, room.sb.__warnQ.length);
+  const deathQ = room.sb.__deathQ.splice(0, room.sb.__deathQ.length);
+  const respQ = room.sb.__respQ.splice(0, room.sb.__respQ.length);
+  const data = JSON.stringify(snap);
+  for (let s = 0; s < room.clients.length; s++) {
+    const c = room.clients[s];
+    if (!c || c.readyState !== 1) continue;
+    const mine = [];                                  // pesan pribadi: hanya untuk pemilik jenderal
+    if (warnQ.includes(s)) mine.push("JENDERAL TERANCAM!");
+    if (deathQ.includes(s)) mine.push("Jenderalmu gugur! Respawn dlm " + Math.round(room.sb.mpRespawnDelaySec()) + " detik...");
+    if (respQ.includes(s)) mine.push("Jenderalmu respawn dgn 25 bidak baru!");
+    if (mine.length) c.send(JSON.stringify(Object.assign({}, snap, { toasts: (snap.toasts || []).concat(mine) })));
+    else c.send(data);
+  }
+  return;
 }
 
 function handleInput(ws, msg) {
@@ -214,6 +230,7 @@ function handleInput(ws, msg) {
     ids: pl.ids.filter((n) => Number.isInteger(n)), bx: +pl.bx, by: +pl.by,
     formMode: typeof pl.formMode === "string" ? pl.formMode : null,
     moveMode: pl.moveMode === "goto" ? "goto" : "atk",
+    genMode: ["kiri", "kanan", "atas", "bawah", "tengah"].includes(pl.genMode) ? pl.genMode : "tengah",
   } };
   try { vm.runInContext(`mpApplyRemoteInput(__in.owner, {cmd:"orderMove", payload:__in.payload});`, room.sb); }
   catch (e) { console.error(`[room ${room.id}] ERROR input:`, e.message); }

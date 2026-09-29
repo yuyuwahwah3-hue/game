@@ -68,6 +68,8 @@ function mpConnect(name,photo,onStatus){
    mpPlayers=m.players;mpLoadPhotoImgs();mpGameStarted=true;
    document.getElementById("ov").classList.add("hd");
    mpEnterGame();
+   // Zona api/lumpur/air suci dari server -> isi hz agar render() lama menggambarnya
+   hz=(m.zones||[]).map(function(z){return {t:z.t,x:z.x,y:z.y,r:z.r,poly:z.poly.map(function(q){return {x:q[0],y:q[1]}})}});
   }
   else if(m.type==="state"){ mpOnSnapshot(m) }
   else if(m.type==="end"){ mpShowGameEnd(m.reason) }
@@ -788,7 +790,7 @@ function orderMove(bx,by){
 
  if(sel.size===0)return;
 
- mpSendOrApplyInput("orderMove",{ids:Array.from(sel),bx:bx,by:by,formMode:formMode,moveMode:moveMode});
+ mpSendOrApplyInput("orderMove",{ids:Array.from(sel),bx:bx,by:by,formMode:formMode,moveMode:moveMode,genMode:genMode});
  return;
 
  var idxs=Array.from(sel);

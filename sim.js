@@ -36,7 +36,8 @@ function mpRespawnOwner(ownerIdx){
  }
  var home=OWNER_HOME[ownerIdx]||{x:1400,y:2243};
  spawnOwnerGroup(ownerIdx,home.x,home.y);
- if(ownerIdx===mpMyOwner){ pgenIdx=pgenIdxBase[mpMyOwner];pgen=pc[pgenIdx]; sel.clear();uSI(); tK("Jenderalmu respawn dgn 25 bidak baru!") }
+ if(ownerIdx===mpMyOwner){ pgenIdx=pgenIdxBase[mpMyOwner];pgen=pc[pgenIdx]; sel.clear();uSI(); }
+ __respQ.push(ownerIdx);
 }
 
 function mpRespawnDelaySec(){
@@ -141,7 +142,9 @@ function mpApplyRemoteInput(ownerIdx,msg){
    if(p&&p.owner===ownerIdx&&p.t==="p")sel.add(pl.ids[k]);
   }
   formMode=pl.formMode;moveMode=pl.moveMode;
+  __cmdOwner=ownerIdx;__cmdGenMode=pl.genMode;
   if(sel.size>0)orderMove(pl.bx,pl.by);
+  __cmdOwner=undefined;__cmdGenMode=undefined;
   sel=savedSel;formMode=savedFormMode;moveMode=savedMoveMode;
  }
 }
@@ -239,6 +242,10 @@ var pc=[],tr=[],pt=[],rocks=[],sel=new Set(),drag=null;
 var wilTimer=0,mmTimer=0; // throttle timer utk cek wilayah & redraw minimap (optimasi performa)
 
 var gidCount={};
+var __cmdOwner,__cmdGenMode;
+var __warnQ=[];
+var __deathQ=[];
+var __respQ=[]; // owner yg baru respawn // owner yg jenderalnya baru gugur (mulai timer respawn)
 var pgen=null,pgenIdx=22; // jenderal pemain LOKAL (owner===mpMyOwner) - dipakai apa adanya oleh AI/HUD/kamera yg sudah ada
 var pgens=[null,null,null,null]; // referensi ke jenderal tiap 4 owner (indeks by owner), dipakai utk cek kekalahan total & render multi-jenderal
 var pgenIdxBase=[22,72,122,172]; // indeks awal jenderal tiap owner di array pc (each owner block = 25 bidak)
@@ -836,8 +843,10 @@ function orderMove(bx,by){
 
  var idxs=Array.from(sel);
  var gIdx=-1;
- if(formMode&&idxs.length>1){var gi=idxs.indexOf(pgenIdx);if(gi>=0){gIdx=pgenIdx;idxs.splice(gi,1)}}
- var gK=(gIdx>=0&&formMode==="globus"&&genMode==="tengah")?Math.min(globusHoleCount(3),30):0;
+ var myGenIdx=(typeof __cmdOwner==="number"&&pgens[__cmdOwner])?pc.indexOf(pgens[__cmdOwner]):pgenIdx;
+ var myGenMode=(typeof __cmdGenMode==="string")?__cmdGenMode:genMode;
+ if(formMode&&idxs.length>1){var gi=idxs.indexOf(myGenIdx);if(gi>=0){gIdx=myGenIdx;idxs.splice(gi,1)}}
+ var gK=(gIdx>=0&&formMode==="globus"&&myGenMode==="tengah")?Math.min(globusHoleCount(3),30):0;
  var offs=formMode?fmtOffsets(idxs.length,formMode,gK):null;
 
  if(!offs){
@@ -941,15 +950,15 @@ function orderMove(bx,by){
  // Jendral ikut perintah sbg anggota biasa (dipilih sendirian, atau formMode blm memenuhi syarat slot
  // khusus di atas) - baseGtx/baseGty WAJIB disegarkan ke tujuan baru ini, kalau tidak SIAGA runtime tiap
  // frame bakal nimpa balik ke posisi lama (bug: jendral kelihatan macet/stuck tak mau jalan saat dipilih sendiri).
- if(gIdx<0&&idxs.indexOf(pgenIdx)>=0){
-  var g2=pc[pgenIdx];
+ if(gIdx<0&&idxs.indexOf(myGenIdx)>=0){
+  var g2=pc[myGenIdx];
   g2.baseGtx=bx;g2.baseGty=by;g2.gotoOrder=isGoto;g2.formSnap=null;g2.genModeSnap=null;
  }
 
  if(gIdx>=0){ // jenderal: dapat slot sendiri di grup formasi (bukan individu terpisah), posisi sesuai tombol "Jendral: ..."
   var g=pc[gIdx];
   var gox=0,goy=0;
-  if(genMode!=="tengah"){
+  if(myGenMode!=="tengah"){
    // Cari bounding box slot2 bidak (offs, relatif thd titik tujuan bx,by) utk taruh jendral di LUAR barisan
    var minOx=1e9,maxOx=-1e9,minOy=1e9,maxOy=-1e9;
    for(var k=0;k<offs.length;k++){
@@ -960,10 +969,10 @@ function orderMove(bx,by){
    }
    if(offs.length===0){minOx=maxOx=minOy=maxOy=0}
    var margin=PR*4.5;
-   if(genMode==="kiri"){gox=minOx-margin;goy=(minOy+maxOy)/2}
-   else if(genMode==="kanan"){gox=maxOx+margin;goy=(minOy+maxOy)/2}
-   else if(genMode==="atas"){goy=minOy-margin;gox=(minOx+maxOx)/2}
-   else if(genMode==="bawah"){goy=maxOy+margin;gox=(minOx+maxOx)/2}
+   if(myGenMode==="kiri"){gox=minOx-margin;goy=(minOy+maxOy)/2}
+   else if(myGenMode==="kanan"){gox=maxOx+margin;goy=(minOy+maxOy)/2}
+   else if(myGenMode==="atas"){goy=minOy-margin;gox=(minOx+maxOx)/2}
+   else if(myGenMode==="bawah"){goy=maxOy+margin;gox=(minOx+maxOx)/2}
   }
   g.obey=true;g.ord="move";g.tgt=null;g.zone=null;g.eng=null;g.rt=false;g.orbiting=null;g.gotoBlock=false;
   g.form=null;g.gid=gid;g.ox=0;g.oy=0;g.gtx=bx+gox;g.gty=by+goy;
@@ -971,7 +980,7 @@ function orderMove(bx,by){
   // Snapshot mode formasi/genMode/GoTo saat perintah ini diberikan - dipakai SIAGA runtime utk tahu
   // apakah jendral skrg "terlindungi penuh" (globus+tengah = terkurung 360° bidak sendiri) atau
   // sedang GoTo (wajib patuh lurus spt bidak biasa, tak boleh kabur menyimpang formasi/barisan).
-  g.formSnap=formMode;g.genModeSnap=genMode;g.gotoOrder=isGoto;
+  g.formSnap=formMode;g.genModeSnap=myGenMode;g.gotoOrder=isGoto;
  }
  for(var k=0;k<idxs.length;k++)pc[idxs[k]].kx=gK;
  var modeTxt=isGoto?"GoTo":"Serang";
@@ -1335,7 +1344,7 @@ function genZones(){
   for(var z=0;z<nz;z++){
    for(var k=0;k<25;k++){
     var pt=(te.nm==="Hutan Sancang")?randPtInPolyMinX(te,2300):randPtInPoly(te),r=((ty==="api"?50:70)+Math.random()*60)*3;
-    if(isWater(pt.x,pt.y)||ds(pt,pgen)<400||(te.gp&&ds(pt,te.gp)<r+120))continue;
+    if(isWater(pt.x,pt.y)||(function(){for(var o=0;o<4;o++){if(pgens[o]&&ds(pt,pgens[o])<400)return true}return false})()||(te.gp&&ds(pt,te.gp)<r+120))continue;
     hz.push({t:ty,x:pt.x,y:pt.y,r:r,poly:mkBlob(pt.x,pt.y,r)});break;
    }
   }
@@ -1733,7 +1742,7 @@ function update(dt){
 
 
  for(var i=0;i<al.length;i++){var pq=al[i];if(pq.role==="inf"||pq.gen){pq.tgt=null;pq.zone=null;pq.orbiting=null}}
- if(pgen&&pgen.al){
+ for(var _sg=0;_sg<4;_sg++){var pgen=pgens[_sg];if(!(pgen&&pgen.al))continue; // SEMUA jenderal punya siaga
   // Mode SIAGA jendral: radius 1.5x jangkauan bidak (AR). Kalau ada musuh masuk radius ini, jendral
   // TIDAK ikut bertarung/mendekat, melainkan kabur ke BELAKANG kerumunan bidak sendiri (posisi menjauh
   // dari arah musuh) - urutan akhir jadi jendral-bidak-musuh. Kalau aman lagi, balik ke slot formasi
@@ -2114,11 +2123,11 @@ function update(dt){
 
 
  // === JENDERAL: cegah mundur, konversi pasukan saat jenderal wilayah gugur ===
- if(pgen){
-  pgen.rt=false;
-  document.getElementById("gH").textContent=Math.max(0,Math.round(pgen.hp/pgen.mhp*100));
-  if(pgen.hp<pgen.mhp*0.4&&!pgen.warn&&pgen.al){pgen.warn=true;tK("JENDERAL TERANCAM!")}
-  else if(pgen.hp>pgen.mhp*0.6)pgen.warn=false;
+ for(var _wo=0;_wo<4;_wo++){
+  var wg=pgens[_wo];if(!wg)continue;
+  wg.rt=false;
+  if(wg.hp<wg.mhp*0.4&&!wg.warn&&wg.al){wg.warn=true;__warnQ.push(_wo)}
+  else if(wg.hp>wg.mhp*0.6)wg.warn=false;
  }
  for(var t=0;t<tr.length;t++){
   var te=tr[t];if(!te.gp&&!te.gp2)continue;
@@ -2168,7 +2177,7 @@ function update(dt){
   if(!ownerAlive){
    if(mpRespawnTimers[oi]===0){
     mpRespawnTimers[oi]=nowMs+mpRespawnDelaySec()*1000;
-    if(oi===mpMyOwner)tK("Jenderalmu gugur! Respawn dlm "+Math.round(mpRespawnDelaySec())+" detik...");
+    __deathQ.push(oi); // server kirim pesan ini hanya ke pemilik jenderal
    } else if(nowMs>=mpRespawnTimers[oi]){
     mpRespawnOwner(oi);
     mpRespawnTimers[oi]=0;
@@ -2634,3 +2643,9 @@ function mpEnterGame(){
 // Loop TIDAK dimulai otomatis saat load - menunggu mpEnterGame() dipanggil setelah lobby (host mulai
 // / client terima pesan "start"). Ini penting krn spawn (iPc dll) butuh mpMyOwner & mpPlayers terisi dulu.
 
+
+
+function __zonesForClient(){
+ if(!hz){try{genZones()}catch(e){hz=[]}}
+ return hz.map(function(z){return {t:z.t,x:Math.round(z.x),y:Math.round(z.y),r:Math.round(z.r),poly:z.poly.map(function(q){return [Math.round(q.x),Math.round(q.y)]})}});
+}
