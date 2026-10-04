@@ -15,15 +15,16 @@ var playerName="Jenderal",playerPhotoImg=null,playerPhotoDataURL=null; // nama &
 // owner: 0-3, indeks slot pemain. mpMyOwner = slot pemain LOKAL (browser ini).
 // Host (owner 0) menjalankan simulasi penuh (update/AI/fisika) & broadcast state ke semua client.
 // Client cuma kirim perintah (klik/drag/formasi) ke host & render state yg diterima.
-var OWNER_COLORS=["#d4a832","#4488ff","#44c470","#a86633"]; // kuning, biru, hijau, coklat (bukan merah - sama dgn warna musuh)
-var OWNER_NAMES=["Jenderal 1","Jenderal 2","Jenderal 3","Jenderal 4"];
+var OWNER_COLORS=["#6fcf6f","#3fae3f","#2a8a2a","#1a6b1a","#e06a6a","#c43c3c","#9c2222","#6e1414"]; // 4 corak HIJAU (tim A, owner 0-3) + 4 corak MERAH (tim B, owner 4-7)
+var OWNER_NAMES=["Hijau 1","Hijau 2","Hijau 3","Hijau 4","Merah 1","Merah 2","Merah 3","Merah 4"];
 var mpIsHost=false,mpPeer=null,mpMyOwner=0,mpGameStarted=false;
-var mpConns=[null,null,null,null]; // host: koneksi ke tiap client (indeks by owner)
+var mpConns=[null,null,null,null,null,null,null,null]; // host: koneksi ke tiap client (indeks by owner, 0-3=tim A, 4-7=tim B)
 var mpHostConn=null; // client: koneksi tunggal ke host
-var mpPlayers=[null,null,null,null]; // {name,photo} per owner slot
-var mpPhotoImgs=[null,null,null,null]; // Image() per owner, dipakai render jenderal masing2
+var mpPlayers=[null,null,null,null,null,null,null,null]; // {name,photo} per owner slot (8 = 4 per tim)
+var mpBots=[null,null,null,null,null,null,null,null]; // true kalau slot ini diisi BOT (server), bukan koneksi pemain manusia
+var mpPhotoImgs=[null,null,null,null,null,null,null,null]; // Image() per owner, dipakai render jenderal masing2
 var mpGameStartTime=0; // performance.now() saat mpEnterGame() dipanggil, dasar hitung waktu respawn
-var mpRespawnTimers=[0,0,0,0]; // epoch ms kapan owner boleh respawn (0 = tidak sedang menunggu)
+var mpRespawnTimers=[0,0,0,0,0,0,0,0]; // epoch ms kapan owner boleh respawn (0 = tidak sedang menunggu)
 var mpEnded=false;
 
 function mpRespawnOwner(ownerIdx){
@@ -32,7 +33,7 @@ function mpRespawnOwner(ownerIdx){
  // lalu spawn 25 bidak+jendral baru di akhir array pc di markas asal owner (OWNER_HOME).
  for(var qi=0;qi<pc.length;qi++){
   var o=pc[qi];
-  if(o.owner===ownerIdx&&o.t==="p"&&o.al){o.al=false;o.hp=0}
+  if(o.owner===ownerIdx&&o.al){o.al=false;o.hp=0}
  }
  var home=OWNER_HOME[ownerIdx]||{x:1400,y:2243};
  spawnOwnerGroup(ownerIdx,home.x,home.y);
@@ -46,7 +47,7 @@ function mpRespawnDelaySec(){
  return Math.min(120,Math.max(5,minutes*5));
 }
 
-function mpBroadcast(msg){ for(var i=0;i<4;i++) if(mpConns[i]) mpConns[i].send(msg) }
+function mpBroadcast(msg){ for(var i=0;i<8;i++) if(mpConns[i]) mpConns[i].send(msg) }
 function mpBroadcastLobby(){ mpBroadcast({type:"lobby",players:mpPlayers}) }
 
 // ====== SINKRONISASI STATE (host -> client) ======
@@ -87,7 +88,7 @@ function mpApplyTrLite(arr){
 function mpTickBroadcast(t){
  if(t-mpLastBroadcastT<1000/MP_BROADCAST_HZ)return;
  mpLastBroadcastT=t;
- var pa=0;for(var i=0;i<pc.length;i++)if(pc[i].al&&pc[i].t==="p")pa++;
+ var pa=0;for(var i=0;i<pc.length;i++)if(pc[i].al&&pc[i].team==="A")pa++;
  var cp=0;for(var i=0;i<tr.length;i++)if(tr[i].tm==="p")cp++;
  mpBroadcast({
   type:"state",
@@ -95,8 +96,8 @@ function mpTickBroadcast(t){
   tr:mpSerializeTr(),
   pa:pa,
   hudGH:pgens[0]?Math.max(0,Math.round((pgens[0].hp/pgens[0].mhp)*100)):0, // dikirim per-owner di bawah, ini fallback
-  gensHp:[0,1,2,3].map(function(oi){var g=pgens[oi];return g?Math.round(g.hp/g.mhp*100):0}),
-  gensAl:[0,1,2,3].map(function(oi){var g=pgens[oi];return g?g.al:false}),
+  gensHp:[0,1,2,3,4,5,6,7].map(function(oi){var g=pgens[oi];return g?Math.round(g.hp/g.mhp*100):0}),
+  gensAl:[0,1,2,3,4,5,6,7].map(function(oi){var g=pgens[oi];return g?g.al:false}),
   cp:cp,
   go:go
  });
@@ -105,11 +106,11 @@ function mpTickBroadcast(t){
 function mpApplyHostState(msg){
  pc=mpDeserializePc(msg.pc);
  mpApplyTrLite(msg.tr);
- for(var oi=0;oi<4;oi++){
+ for(var oi=0;oi<8;oi++){
   pgens[oi]=null;
   // Ambil jendral TERBARU milik owner ini (iterasi dari belakang): setelah respawn, jendral lama yg
   // sudah mati masih ada di array (tdk di-splice), jadi jendral baru selalu ada di indeks lebih besar.
-  for(var qi=pc.length-1;qi>=0;qi--){if(pc[qi].owner===oi&&pc[qi].gen&&pc[qi].t==="p"){pgens[oi]=pc[qi];break}}
+  for(var qi=pc.length-1;qi>=0;qi--){if(pc[qi].owner===oi&&pc[qi].gen){pgens[oi]=pc[qi];break}}
  }
  pgen=pgens[mpMyOwner];
  document.getElementById("pC").textContent=msg.pa;
@@ -139,7 +140,7 @@ function mpApplyRemoteInput(ownerIdx,msg){
   sel=new Set();
   for(var k=0;k<pl.ids.length;k++){
    var p=pc[pl.ids[k]];
-   if(p&&p.owner===ownerIdx&&p.t==="p")sel.add(pl.ids[k]);
+   if(p&&p.owner===ownerIdx)sel.add(pl.ids[k]);
   }
   formMode=pl.formMode;moveMode=pl.moveMode;
   __cmdOwner=ownerIdx;__cmdGenMode=pl.genMode;
@@ -150,7 +151,7 @@ function mpApplyRemoteInput(ownerIdx,msg){
 }
 
 function mpLoadPhotoImgs(){
- for(var i=0;i<4;i++){
+ for(var i=0;i<8;i++){
   var pl=mpPlayers[i];
   if(pl&&pl.photo&&!mpPhotoImgs[i]){
    var im=new Image();im.src=pl.photo;mpPhotoImgs[i]=im;
@@ -246,9 +247,10 @@ var __cmdOwner,__cmdGenMode;
 var __warnQ=[];
 var __deathQ=[];
 var __respQ=[]; // owner yg baru respawn // owner yg jenderalnya baru gugur (mulai timer respawn)
+var winnerTeam=null;
 var pgen=null,pgenIdx=22; // jenderal pemain LOKAL (owner===mpMyOwner) - dipakai apa adanya oleh AI/HUD/kamera yg sudah ada
-var pgens=[null,null,null,null]; // referensi ke jenderal tiap 4 owner (indeks by owner), dipakai utk cek kekalahan total & render multi-jenderal
-var pgenIdxBase=[22,72,122,172]; // indeks awal jenderal tiap owner di array pc (each owner block = 25 bidak)
+var pgens=[null,null,null,null,null,null,null,null]; // referensi ke jenderal tiap owner (8 slot: 0-3 tim A, 4-7 tim B)
+var pgenIdxBase=[22,72,122,172,222,272,322,372]; // indeks awal jenderal tiap owner (tiap owner block = 25 bidak, 8 owner total)
 // gid -> jumlah member hidup terakhir kali di-reflow, utk deteksi bidak formasi yg mati
 
 var cam={x:1450,y:2350,z:1};
@@ -305,7 +307,7 @@ addEventListener("resize",rz);rz();
 function iTr(){
 
 tr=[
-  {nm:"Hutan Sancang",rl:"Maung Sancang",poly:[[3466.9,1801.7],[3317.8,1665.0],[3305.3,1602.9],[3280.5,1752.0],[3230.8,1764.4],[3193.5,1652.6],[3156.2,1627.8],[3168.6,1565.6],[3118.9,1453.8],[3056.8,1503.5],[2982.2,1478.7],[2932.5,1540.8],[2783.4,1503.5],[2646.7,1540.8],[2646.7,1565.6],[2684.0,1578.1],[2646.7,1665.0],[2472.8,1652.6],[2423.1,1689.9],[2348.5,1689.9],[2336.1,1578.1],[2286.4,1553.2],[2236.7,1590.5],[2187.0,1590.5],[2174.6,1640.2],[2087.6,1652.6],[2013.0,1702.3],[1901.2,1702.3],[1851.5,1665.0],[1776.9,1689.9],[1876.3,1764.4],[1851.5,1814.1],[1689.9,1776.9],[1677.5,1863.8],[1516.0,1863.8],[1478.7,1901.1],[1379.3,1901.1],[1342.0,1950.8],[1304.7,1950.8],[1304.7,2000.5],[1242.6,2050.2],[1230.2,2149.6],[1255.0,2249.0],[1205.3,2286.3],[1168.0,2385.7],[1205.3,2522.4],[1180.5,2696.4],[1242.6,2696.4],[1255.0,2659.1],[1329.6,2609.4],[1379.3,2609.4],[1516.0,2683.9],[1926.0,2510.0],[2037.9,2522.4],[2137.3,2485.1],[2274.0,2485.1],[2286.4,2522.4],[2037.9,2646.7],[1938.5,2770.9],[2062.7,2708.8],[2075.1,2783.3],[2137.3,2683.9],[2199.4,2696.4],[2249.1,2671.5],[2261.5,2708.8],[2423.1,2646.7],[2435.5,2708.8],[2385.8,2733.6],[2385.8,2783.3],[2423.1,2770.9],[2460.4,2808.2],[2447.9,2845.5],[2522.5,2808.2],[2534.9,2845.5],[2510.1,2870.3],[2534.9,2907.6],[2584.6,2870.3],[2708.9,2845.5],[2808.3,2758.5],[3007.1,2696.4],[3143.8,2584.5],[3367.5,2559.7],[3491.7,2423.0],[3491.7,2373.3],[3442.0,2323.6],[3442.0,2224.2],[3529.0,2137.2],[3541.4,2075.1],[3466.9,1950.8]],cx:2418.8,cy:2173.8,r:839.2,tm:"n",en:40,cl:"rgba(84,99,38,0.30)",bc:"#3a441a"},
+  {nm:"Hutan Sancang",rl:"Maung Sancang",poly:[[3466.9,1801.7],[3317.8,1665.0],[3305.3,1602.9],[3280.5,1752.0],[3230.8,1764.4],[3193.5,1652.6],[3156.2,1627.8],[3168.6,1565.6],[3118.9,1453.8],[3056.8,1503.5],[2982.2,1478.7],[2932.5,1540.8],[2783.4,1503.5],[2646.7,1540.8],[2646.7,1565.6],[2684.0,1578.1],[2646.7,1665.0],[2472.8,1652.6],[2423.1,1689.9],[2348.5,1689.9],[2336.1,1578.1],[2286.4,1553.2],[2236.7,1590.5],[2187.0,1590.5],[2174.6,1640.2],[2087.6,1652.6],[2013.0,1702.3],[1901.2,1702.3],[1851.5,1665.0],[1776.9,1689.9],[1876.3,1764.4],[1851.5,1814.1],[1689.9,1776.9],[1677.5,1863.8],[1516.0,1863.8],[1478.7,1901.1],[1379.3,1901.1],[1342.0,1950.8],[1304.7,1950.8],[1304.7,2000.5],[1242.6,2050.2],[1230.2,2149.6],[1255.0,2249.0],[1205.3,2286.3],[1168.0,2385.7],[1205.3,2522.4],[1180.5,2696.4],[1242.6,2696.4],[1255.0,2659.1],[1329.6,2609.4],[1379.3,2609.4],[1516.0,2683.9],[1926.0,2510.0],[2037.9,2522.4],[2137.3,2485.1],[2274.0,2485.1],[2286.4,2522.4],[2037.9,2646.7],[1938.5,2770.9],[2062.7,2708.8],[2075.1,2783.3],[2137.3,2683.9],[2199.4,2696.4],[2249.1,2671.5],[2261.5,2708.8],[2423.1,2646.7],[2435.5,2708.8],[2385.8,2733.6],[2385.8,2783.3],[2423.1,2770.9],[2460.4,2808.2],[2447.9,2845.5],[2522.5,2808.2],[2534.9,2845.5],[2510.1,2870.3],[2534.9,2907.6],[2584.6,2870.3],[2708.9,2845.5],[2808.3,2758.5],[3007.1,2696.4],[3143.8,2584.5],[3367.5,2559.7],[3491.7,2423.0],[3491.7,2373.3],[3442.0,2323.6],[3442.0,2224.2],[3529.0,2137.2],[3541.4,2075.1],[3466.9,1950.8]],cx:2418.8,cy:2173.8,r:839.2,tm:"A",en:40,cl:"rgba(84,99,38,0.30)",bc:"#3a441a"},
   {nm:"Sunda Kalapa",rl:"Syahbandar Sangadi",poly:[[5430.2,1081.0],[5256.2,1130.7],[5218.9,1230.1],[5094.7,1391.7],[5020.1,1441.4],[4871.0,1491.1],[4833.7,1615.3],[4784.0,1689.9],[4821.3,1789.3],[4821.3,1839.0],[4784.0,1876.3],[4784.0,1938.4],[4970.4,2236.6],[4970.4,2410.6],[4908.3,2522.4],[4933.1,2671.5],[4858.6,2746.1],[4821.3,2820.6],[4796.4,3007.0],[4858.6,3143.7],[4958.0,3255.5],[5169.2,3317.6],[5256.2,3305.2],[5343.2,3243.1],[5504.7,3243.1],[5542.0,3218.2],[5666.3,3044.3],[5852.7,2882.8],[5927.2,2882.8],[6051.5,2808.2],[6101.2,2746.1],[6225.4,2721.2],[6287.6,2659.1],[6387.0,2485.1],[6337.3,2485.1],[6275.1,2435.4],[6237.9,2360.9],[6250.3,2273.9],[6126.0,2137.2],[6076.3,2037.8],[6014.2,1975.7],[6001.8,2013.0],[5964.5,2000.5],[5939.6,1938.4],[5964.5,1776.9],[5815.4,1677.5],[5840.2,1640.2],[5827.8,1590.5],[5753.3,1565.6],[5728.4,1528.4],[5740.8,1428.9],[5703.6,1404.1],[5616.6,1416.5],[5529.6,1354.4],[5554.4,1242.6],[5479.9,1230.1],[5467.5,1354.4],[5417.8,1391.7],[5380.5,1466.2],[5243.8,1503.5],[5169.2,1565.6],[5119.5,1553.2],[5119.5,1528.4],[5206.5,1441.4],[5330.8,1391.7],[5318.3,1354.4],[5368.0,1317.1],[5368.0,1205.3],[5405.3,1180.4],[5380.5,1168.0],[5380.5,1118.3],[5417.8,1105.9],[5430.2,1130.7]],cx:5447.4,cy:2298.5,r:826.6,tm:"n",en:40,cl:"rgba(93,104,36,0.30)",bc:"#404719"},
   {nm:"Muara Sukanagara",rl:"Dipati Sukanagara",poly:[[5144.4,1018.9],[5119.5,1018.9],[5032.5,1105.9],[5007.7,1105.9],[4995.3,1081.0],[4908.3,1105.9],[4895.9,1155.6],[4684.6,1180.4],[4647.3,1217.7],[4523.1,1205.3],[4485.8,1118.3],[4411.2,1068.6],[4374.0,1105.9],[4311.8,1105.9],[4287.0,1081.0],[4287.0,1105.9],[4349.1,1105.9],[4386.4,1130.7],[4398.8,1168.0],[4324.3,1168.0],[4299.4,1217.7],[4212.4,1205.3],[4274.6,1441.4],[4237.3,1478.7],[4187.6,1453.8],[4162.7,1466.2],[4187.6,1602.9],[4125.4,1665.0],[4063.3,1665.0],[4038.5,1640.2],[3988.8,1652.6],[3926.6,1578.1],[3777.5,1565.6],[3765.1,1528.4],[3789.9,1503.5],[3665.7,1515.9],[3553.8,1478.7],[3529.0,1528.4],[3553.8,1578.1],[3553.8,1627.8],[3529.0,1652.6],[3553.8,1839.0],[3541.4,1938.4],[3616.0,2050.2],[3616.0,2137.2],[3541.4,2224.2],[3628.4,2249.0],[3727.8,2336.0],[3901.8,2373.3],[3976.3,2472.7],[4075.7,2485.1],[4175.1,2609.4],[4324.3,2721.2],[4535.5,2659.1],[4647.3,2659.1],[4796.4,2708.8],[4871.0,2634.2],[4833.7,2572.1],[4833.7,2497.6],[4895.9,2410.6],[4908.3,2336.0],[4895.9,2249.0],[4709.5,1950.8],[4709.5,1863.8],[4734.3,1814.1],[4709.5,1727.2],[4709.5,1640.2],[4734.3,1602.9],[4721.9,1565.6],[4759.2,1466.2],[4871.0,1379.2],[4995.3,1354.4],[5032.5,1317.1],[5032.5,1255.0],[5069.8,1230.1],[5144.4,1093.5]],cx:4308.2,cy:1931.8,r:696.1,tm:"n",en:40,cl:"rgba(86,98,36,0.30)",bc:"#3b4319"},
   {nm:"Karangpapak",rl:"Ratu Inten Dewata",poly:[[3019.5,3988.6],[2945.0,3938.9],[2882.8,3926.5],[2758.6,3802.2],[2733.7,3802.2],[2634.3,3678.0],[2609.5,3603.4],[2510.1,3665.6],[2435.5,3665.6],[2286.4,3541.3],[2224.3,3678.0],[2124.9,3740.1],[2062.7,3702.8],[2050.3,3640.7],[1963.3,3615.9],[1938.5,3640.7],[1615.4,3665.6],[1590.5,3690.4],[1453.8,3702.8],[1416.6,3727.7],[1354.4,3715.3],[1329.6,3752.5],[1292.3,3752.5],[1255.0,3715.3],[1217.8,3727.7],[1230.2,3789.8],[1180.5,3814.7],[1354.4,3814.7],[1379.3,3876.8],[1453.8,3901.7],[1466.3,3926.5],[1540.8,3852.0],[1578.1,3852.0],[1590.5,3901.7],[1689.9,3951.4],[1776.9,4075.6],[1839.1,4125.3],[1926.0,4311.7],[1963.3,4485.7],[1950.9,4622.3],[1926.0,4647.2],[1888.8,4634.8],[1876.3,4696.9],[2050.3,4684.5],[2100.0,4709.3],[2236.7,4709.3],[2311.2,4659.6],[2311.2,4609.9],[2261.5,4572.6],[2261.5,4485.7],[2336.1,4398.7],[2323.7,4324.1],[2373.4,4311.7],[2410.7,4349.0],[2435.5,4336.6],[2460.4,4199.9],[2522.5,4150.2],[2534.9,4025.9],[2584.6,4001.1],[2634.3,4013.5],[2646.7,4175.0],[2609.5,4262.0],[2559.8,4299.3],[2534.9,4349.0],[2634.3,4361.4],[2671.6,4498.1],[2733.7,4510.5],[2721.3,4460.8],[2746.2,4423.5],[2746.2,4373.8],[2771.0,4361.4],[2771.0,4286.8],[2882.8,4125.3],[2882.8,4075.6],[2994.7,4038.3]],cx:2198.8,cy:4042.4,r:547.2,tm:"n",en:40,cl:"rgba(95,106,36,0.30)",bc:"#414919"},
@@ -324,7 +326,7 @@ tr=[
   {nm:"Pasir Batang",rl:"Raden Kamandaka",poly:[[15060.4,3789.8],[14923.7,3814.7],[14886.4,3727.7],[14886.4,3802.2],[14824.3,3765.0],[14762.1,3827.1],[14700.0,3814.7],[14588.2,3876.8],[14600.6,3789.8],[14563.3,3715.3],[14637.9,3640.7],[14613.0,3566.2],[14575.7,3603.4],[14526.0,3591.0],[14575.7,3516.5],[14550.9,3504.0],[14575.7,3379.8],[14376.9,3466.8],[14277.5,3441.9],[14240.2,3491.6],[14091.1,3454.3],[14103.6,3417.1],[14240.2,3417.1],[14501.2,3292.8],[14414.2,3280.4],[14240.2,3354.9],[14041.4,3342.5],[14078.7,3292.8],[14277.5,3267.9],[14277.5,3181.0],[14389.3,3094.0],[14227.8,3168.5],[14203.0,3056.7],[14451.5,3031.9],[14401.8,3007.0],[14401.8,2870.3],[14352.1,2870.3],[14128.4,3106.4],[14091.1,3056.7],[13743.2,3305.2],[13917.2,3280.4],[13942.0,3367.4],[13805.3,3392.2],[13792.9,3417.1],[13867.5,3404.6],[13879.9,3454.3],[13730.8,3466.8],[13755.6,3528.9],[13705.9,3578.6],[13668.6,3566.2],[13693.5,3504.0],[13643.8,3491.6],[13618.9,3702.8],[13544.4,3765.0],[13482.2,3765.0],[13469.8,3852.0],[13159.2,3889.2],[13271.0,3876.8],[13295.9,3926.5],[13246.2,3938.9],[13358.0,4001.1],[13258.6,4112.9],[12910.7,4137.7],[12910.7,4088.0],[13109.5,4063.2],[13084.6,4025.9],[13109.5,3926.5],[13059.8,3914.1],[12985.2,4025.9],[12873.4,4075.6],[12860.9,4025.9],[12972.8,3963.8],[12935.5,3938.9],[12711.8,4150.2],[12624.9,4162.6],[12575.1,4274.4],[12749.1,4349.0],[12935.5,4311.7],[13059.8,4398.7],[13258.6,4336.6],[13407.7,4498.1],[13507.1,4783.9],[13755.6,4796.3],[13991.7,4709.3],[14103.6,4597.5],[14426.6,4398.7],[14637.9,4175.0],[14774.6,4125.3]],cx:13916.7,cy:4029.3,r:726.1,tm:"n",en:40,cl:"rgba(106,87,22,0.30)",bc:"#493b0f"},
   {nm:"Huma Beunghar",rl:"Tuan Tanah Beunghar",poly:[[14712.4,4237.1],[14066.3,4746.6],[13780.5,4858.4],[13569.2,4846.0],[13271.0,5144.2],[13407.7,5218.8],[13445.0,5069.7],[13544.4,5106.9],[13482.2,5280.9],[13792.9,5343.0],[13792.9,5405.2],[13445.0,5355.5],[13382.8,5268.5],[13109.5,5467.3],[13047.3,5380.3],[12923.1,5442.4],[13109.5,5467.3],[13084.6,5541.8],[12848.5,5529.4],[12898.2,5405.2],[12488.2,5529.4],[12140.2,5479.7],[11469.2,5740.6],[11419.5,5889.8],[11829.6,6038.9],[11966.3,6001.6],[12127.8,6200.4],[12202.4,6188.0],[12016.0,5976.7],[12301.8,6001.6],[12214.8,6125.8],[12351.5,6250.1],[12388.8,6188.0],[12525.4,6411.6],[12202.4,6361.9],[11866.9,6101.0],[12115.4,6312.2],[12140.2,6511.0],[12339.1,6622.9],[12637.3,6610.4],[13159.2,6324.7],[13556.8,6374.4],[14066.3,6212.8],[14314.8,6051.3],[13929.6,6237.7],[13656.2,6237.7],[13656.2,6138.3],[13879.9,5976.7],[13768.0,6175.5],[14203.0,6001.6],[13954.4,5927.0],[13743.2,5976.7],[13755.6,5902.2],[13395.3,6250.1],[12562.7,6473.8],[12649.7,6324.7],[12736.7,6361.9],[12823.7,6287.4],[12525.4,6051.3],[12798.8,6138.3],[12935.5,6287.4],[13097.0,6188.0],[12923.1,6038.9],[12836.1,6038.9],[12898.2,6175.5],[12662.1,6063.7],[12699.4,5927.0],[13469.8,5504.6],[13792.9,5591.5],[13420.1,5591.5],[13171.6,5715.8],[13308.3,5852.5],[13643.8,5690.9],[13606.5,5790.4],[13668.6,5827.6],[13879.9,5566.7],[14265.1,5678.5],[14364.5,5790.4],[14302.4,5902.2],[14414.2,5927.0],[14339.6,6026.4],[14550.9,5927.0],[14675.1,5765.5],[14414.2,5728.2],[13830.2,5417.6],[14103.6,5057.2],[14600.6,4833.6],[14749.7,4535.4]],cx:13264.2,cy:5625.7,r:788.8,tm:"n",en:40,cl:"rgba(101,90,26,0.30)",bc:"#453e12"},
   {nm:"Kadipaten Galuh",rl:"Prabu Niskala",poly:[[15669.2,7393.3],[14973.4,7219.3],[14874.0,7008.1],[14426.6,7032.9],[14203.0,6921.1],[13867.5,6598.0],[13892.3,6349.5],[13519.5,6461.3],[13171.6,6399.2],[12649.7,6685.0],[12339.1,6685.0],[12426.0,6945.9],[12823.7,7356.0],[12562.7,7269.0],[12513.0,7082.6],[12388.8,7020.5],[12326.6,7343.6],[12003.6,7902.7],[12463.3,8772.5],[12525.4,9095.6],[13121.9,9070.7],[13233.7,8983.7],[13059.8,9033.4],[13171.6,8871.9],[13047.3,8958.9],[12997.6,8921.6],[13097.0,8847.1],[12885.8,8971.3],[12798.8,8934.0],[13196.4,8722.8],[13320.7,8784.9],[13469.8,8660.7],[13109.5,8151.2],[13097.0,7679.1],[12860.9,7356.0],[13134.3,7554.8],[13184.0,8126.4],[13532.0,8623.4],[13693.5,8499.1],[13892.3,8611.0],[14128.4,8374.9],[14314.8,8461.9],[14488.8,8399.7],[13979.3,8263.1],[14103.6,8200.9],[14190.5,8287.9],[14613.0,8076.7],[14836.7,8138.8],[14762.1,8064.2],[14936.1,7989.7],[14886.4,7940.0],[14662.7,8039.4],[14662.7,7940.0],[14389.3,7940.0],[14463.9,7952.4],[14401.8,8051.8],[14538.5,8089.1],[14364.5,8064.2],[14252.7,8113.9],[14364.5,8176.1],[14215.4,8225.8],[13830.2,8138.8],[13743.2,8014.5],[14153.3,8027.0],[13730.8,7989.7],[13532.0,7778.5],[13469.8,7803.3],[13457.4,7654.2],[13681.1,7616.9],[13569.2,7467.8],[13705.9,7443.0],[13457.4,7455.4],[13569.2,7492.7],[13594.1,7616.9],[13295.9,7517.5],[13358.0,7443.0],[13134.3,7318.7],[13246.2,7157.2],[13494.7,7256.6],[13420.1,7182.0],[13494.7,7045.3],[13606.5,7256.6],[13718.3,7269.0],[13718.3,7169.6],[13830.2,7119.9],[13842.6,7281.4],[14041.4,7331.1],[13966.9,7393.3],[14190.5,7405.7],[14277.5,7505.1],[14140.8,7517.5],[14488.8,7604.5],[14277.5,7679.1],[14836.7,7654.2],[14836.7,7877.9],[15035.5,7716.3],[15333.7,7778.5],[15383.4,7666.6],[15569.8,7654.2],[15607.1,7542.4],[15358.6,7641.8],[15308.9,7592.1]],cx:13366.7,cy:7679.9,r:1139.2,tm:"n",en:40,cl:"rgba(93,87,29,0.30)",bc:"#403c14"},
-  {nm:"Giri Kancana",rl:"Ratu Dewata",poly:[[11419.5,1689.9],[11432.0,1727.2],[11543.8,1826.6],[11730.2,1888.7],[11767.5,1926.0],[11817.2,2062.7],[11978.7,2112.4],[12053.3,2050.2],[12152.7,2050.2],[12189.9,2075.1],[12177.5,2112.4],[12103.0,2099.9],[12016.0,2137.2],[12065.7,2186.9],[12090.5,2273.9],[12090.5,2447.9],[12202.4,2584.5],[12202.4,2795.8],[12450.9,2808.2],[12662.1,2646.7],[12823.7,2634.2],[12873.4,2584.5],[12923.1,2572.1],[13233.7,2572.1],[13358.0,2485.1],[13532.0,2435.4],[13656.2,2286.3],[13718.3,2149.6],[13718.3,1950.8],[13656.2,1863.8],[13544.4,1764.4],[13420.1,1702.3],[13134.3,1689.9],[13010.1,1652.6],[12947.9,1615.3],[12823.7,1478.7],[12724.3,1491.1],[12662.1,1453.8],[12649.7,1416.5],[12587.6,1366.8],[12575.1,1391.7],[12426.0,1391.7],[12264.5,1354.4],[12276.9,1404.1],[12351.5,1466.2],[12326.6,1540.8],[12028.4,1478.7],[11978.7,1404.1],[11916.6,1503.5],[11879.3,1478.7],[11792.3,1478.7],[11755.0,1528.4],[11705.3,1553.2],[11668.0,1540.8],[11668.0,1590.5],[11692.9,1590.5],[11779.9,1677.5],[11779.9,1727.2],[11717.8,1739.6],[11705.3,1764.4],[11506.5,1702.3],[11481.7,1677.5],[11456.8,1702.3]],cx:12665.1,cy:2040.0,r:758.7,tm:"n",en:40,cl:"rgba(113,91,30,0.30)",bc:"#4d3e14"}
+  {nm:"Giri Kancana",rl:"Ratu Dewata",poly:[[11419.5,1689.9],[11432.0,1727.2],[11543.8,1826.6],[11730.2,1888.7],[11767.5,1926.0],[11817.2,2062.7],[11978.7,2112.4],[12053.3,2050.2],[12152.7,2050.2],[12189.9,2075.1],[12177.5,2112.4],[12103.0,2099.9],[12016.0,2137.2],[12065.7,2186.9],[12090.5,2273.9],[12090.5,2447.9],[12202.4,2584.5],[12202.4,2795.8],[12450.9,2808.2],[12662.1,2646.7],[12823.7,2634.2],[12873.4,2584.5],[12923.1,2572.1],[13233.7,2572.1],[13358.0,2485.1],[13532.0,2435.4],[13656.2,2286.3],[13718.3,2149.6],[13718.3,1950.8],[13656.2,1863.8],[13544.4,1764.4],[13420.1,1702.3],[13134.3,1689.9],[13010.1,1652.6],[12947.9,1615.3],[12823.7,1478.7],[12724.3,1491.1],[12662.1,1453.8],[12649.7,1416.5],[12587.6,1366.8],[12575.1,1391.7],[12426.0,1391.7],[12264.5,1354.4],[12276.9,1404.1],[12351.5,1466.2],[12326.6,1540.8],[12028.4,1478.7],[11978.7,1404.1],[11916.6,1503.5],[11879.3,1478.7],[11792.3,1478.7],[11755.0,1528.4],[11705.3,1553.2],[11668.0,1540.8],[11668.0,1590.5],[11692.9,1590.5],[11779.9,1677.5],[11779.9,1727.2],[11717.8,1739.6],[11705.3,1764.4],[11506.5,1702.3],[11481.7,1677.5],[11456.8,1702.3]],cx:12665.1,cy:2040.0,r:758.7,tm:"B",en:40,cl:"rgba(113,91,30,0.30)",bc:"#4d3e14"}
  ];
 
  // alias x/y=cx/cy supaya fungsi lama (ds, dsb) yg pakai .x/.y tetap jalan tanpa diubah semua
@@ -404,25 +406,32 @@ function randPtInPolyMinX(te,minX){
 
 // BIDAK
 
-function mkP(x,y,t,i){return{x:x,y:y,t:t,i:i,a:t==="p"?0:Math.PI,ox:x,oy:y,ord:null,gtx:null,gty:null,tgt:null,zone:null,orbiting:null,orbitDir:(Math.random()>0.5?1:-1),gid:0,al:true,hp:100,mhp:100,gen:false,rt:false,rt2:0,hf:0,eng:null,moc:0,obey:false,form:null,formAng:0,gotoBlock:false,slotIdx:0,hidden:false,owner:0}}
+function mkP(x,y,t,i){return{x:x,y:y,t:t,i:i,a:t==="A"?0:Math.PI,ox:x,oy:y,ord:null,gtx:null,gty:null,tgt:null,zone:null,orbiting:null,orbitDir:(Math.random()>0.5?1:-1),gid:0,al:true,hp:100,mhp:100,gen:false,rt:false,rt2:0,hf:0,eng:null,moc:0,obey:false,form:null,formAng:0,gotoBlock:false,slotIdx:0,hidden:false,owner:0,team:null}}
 
 
 
-var OWNER_HOME=[null,null,null,null]; // {x,y} markas tiap owner, dipakai ulang saat respawn
+var OWNER_HOME=[null,null,null,null,null,null,null,null]; // {x,y} markas tiap owner (0-3=tim A, 4-7=tim B), dipakai ulang saat respawn
+var OWNER_TEAM=["A","A","A","A","B","B","B","B"]; // owner 0-3 = HIJAU (Hutan Sancang), owner 4-7 = MERAH (Giri Kancana)
+// Titik markas HIJAU (X=1400, dlm poligon Hutan Sancang) & MERAH (X=13300, dlm poligon Giri Kancana).
+// Keduanya diverifikasi manual berada DI DALAM poligon masing2 utk seluruh area blok 6x4+1 bidak.
+var TEAM_HOME_Y={A:[2110,2243,2377,2510], B:[1809,1989,2169,2349]};
+var TEAM_HOME_X={A:1400, B:13300};
 
 function spawnOwnerGroup(ownerIdx,homeX,homeY){
  // 25 bidak (termasuk 1 jendral) dlm barisan 6x4 (24 bidak biasa) + 1 baris tambahan berisi
- // 1 bidak (jendral) di tengah bawah, ditata di sekitar homeX/homeY milik owner ini
+ // 1 bidak (jendral) di tengah bawah, ditata di sekitar homeX/homeY milik owner ini.
+ // team: "A" (hijau, Hutan Sancang, owner 0-3) atau "B" (merah, Giri Kancana, owner 4-7).
+ var team=OWNER_TEAM[ownerIdx];
  var startIdx=pc.length;
  for(var i=0;i<24;i++){
   var rw=i%6,cl=Math.floor(i/6);
-  var p=mkP(homeX-100+rw*40+(Math.random()-.5)*10,homeY-80+cl*40+(Math.random()-.5)*10,"p",-1);
-  p.owner=ownerIdx;
+  var p=mkP(homeX-100+rw*40+(Math.random()-.5)*10,homeY-80+cl*40+(Math.random()-.5)*10,team,-1);
+  p.owner=ownerIdx;p.team=team;
   pc.push(p);
  }
  // bidak ke-25 (jendral): baris ke-5, di tengah horizontal blok 6 kolom
- var genP=mkP(homeX-100+2.5*40+(Math.random()-.5)*10,homeY-80+4*40+(Math.random()-.5)*10,"p",-1);
- genP.owner=ownerIdx;
+ var genP=mkP(homeX-100+2.5*40+(Math.random()-.5)*10,homeY-80+4*40+(Math.random()-.5)*10,team,-1);
+ genP.owner=ownerIdx;genP.team=team;
  pc.push(genP);
  var gp=pc[startIdx+24]; // bidak ke-25 (indeks 24 dari 25) jadi jendral
  gp.gen=true;gp.hp=gp.mhp=400;gp.warn=false;
@@ -436,52 +445,20 @@ function iPc(){
 
  pc=[];
 
- // 4 markas pemain berdampingan di sisi KIRI wilayah Sancang (dekat tepi laut), tetap terpisah
- // dari area spawn musuh yg dibatasi ke sisi KANAN Sancang (lihat SANCANG_SPLIT_X di bawah).
- // Titik Y (2110/2243/2377/2510) diverifikasi manual berada DI DALAM poligon Hutan Sancang utk
- // seluruh area blok 6x4+1 bidak (bukan cuma titik tengahnya) - blok ini lebih lebar dari versi
- // 5x5 sebelumnya jadi titik lama sebagian jatuh di luar poligon, sudah dihitung ulang.
- // PENTING: cuma spawn owner yg SLOT-NYA TERISI (mpPlayers[oi] != null) - kalau cuma 2-3 pemain
- // yg join & mulai, owner kosong TIDAK di-spawn sama sekali (bukan spawn lalu langsung dianggap
- // "kalah"), supaya game bisa dimainkan berapa pun jumlah pemain (2, 3, atau 4).
- var HOME_Y=[2110,2243,2377,2510];
- for(var oi=0;oi<4;oi++){
-  if(mpPlayers[oi]) spawnOwnerGroup(oi,1400,HOME_Y[oi]);
+ // Spawn 2 markas TIM (bukan 4 markas 1 sisi spt versi lama): owner 0-3 = tim HIJAU di Hutan
+ // Sancang, owner 4-7 = tim MERAH di Giri Kancana. Cuma owner yg SLOT-NYA TERISI (mpPlayers[oi])
+ // yg di-spawn - mode 1v1/2v2/3v3 slot sisanya kosong, tidak dianggap "kalah".
+ // TIDAK ADA LAGI spawn musuh AI netral per wilayah (dihapus total utk mode tim vs tim) - 18
+ // wilayah tengah mulai KOSONG/netral (tm:"n"), direbut dgn diinjak bidak tim manapun.
+ for(var oi=0;oi<8;oi++){
+  if(mpPlayers[oi]){
+   var team=OWNER_TEAM[oi],slotInTeam=oi%4;
+   spawnOwnerGroup(oi,TEAM_HOME_X[team],TEAM_HOME_Y[team][slotInTeam]);
+  }
  }
 
  pgenIdx=pgenIdxBase[mpMyOwner];
  pgen=pc[pgenIdx];
-
- // Garis pemisah horizontal di dalam wilayah Sancang: markas pemain di sisi kiri (x<garis ini),
- // spawn musuh di Sancang dipaksa muncul di sisi kanan (x>=garis ini) supaya ada jarak aman di antara keduanya.
- var SANCANG_SPLIT_X=2300;
-
- for(var t=0;t<tr.length;t++){
-
-  var te=tr[t];
-
-  var gpos=null;
-  for(var j=0;j<te.en;j++){
-   var sp=(te.nm==="Hutan Sancang")?randPtInPolyMinX(te,SANCANG_SPLIT_X):randPtInPoly(te);
-   if(j===0)gpos=sp;
-   else if(j<=12){ // 12 pengawal berkumpul di sekitar jenderal
-    for(var k2=0;k2<12;k2++){var an=Math.random()*6.283,rd=45+Math.random()*70,qx=gpos.x+Math.cos(an)*rd,qy=gpos.y+Math.sin(an)*rd;if(pip(te.poly,qx,qy)){sp={x:qx,y:qy};break}}
-   }
-   var p=mkP(sp.x,sp.y,"e",t);
-   if(j===0){p.gen=true;p.hp=p.mhp=300;te.gp=p;te.st="idle";te.form=["globus","simplex","duplex","vshape"][Math.floor(Math.random()*4)]}
-   p.role=(j>12&&j%3===0)?"inf":"atk"; // inf=informan (tak bertarung, jadi pelari pemberi kabar)
-
-   // FOG OF WAR PER-WILAYAH: musuh disembunyikan (tidak disimulasikan/tidak digambar) sampai
-   // ada bidak pemain yg benar2 masuk ke wilayah ini (lihat blok "Wilayah" di update() utk toggle-nya).
-   // Ini sekaligus optimasi (bidak yg hidden tak ikut diproses tiap frame) & strategi baru
-   // (pemain wajib "mengintai" dgn 1 bidak dulu sebelum tau isi garnisun tiap wilayah).
-   p.hidden=true;
-
-   p.a=Math.PI;pc.push(p);
-
-  }
-
- }
 
 }
 
@@ -536,7 +513,7 @@ function sM0(x,y){return isWater(x,y)?WATER_SPD:1}
 // boleh berputar di tempat utk menghadap & menyerang. Dua kasus: (1) bidak formasi yg sudah
 // sampai di slotnya, (2) bidak mode GoTo (obey) yg sudah tiba di tujuan (ord bukan "move" lagi).
 function isAnchored(p){
- if(p.t!=="p"&&!p.cmd)return false;
+ // (dulu: hanya bidak sekutu/musuh-yg-sedang-cmd yg boleh anchor; tak relevan lagi tanpa AI netral)
  if(p.form&&p.formAng!=null){
   var dX=p.gtx+p.ox,dY=p.gty+p.oy;
   if(ds(p,{x:dX,y:dY})<=SR*1.2)return true;
@@ -592,7 +569,7 @@ function sRx(x0,y0,x1,y1){
 
  sel.clear();
 
- for(var i=0;i<pc.length;i++){var p=pc[i];if(!p.al||p.t!=="p"||p.owner!==mpMyOwner)continue;if(p.x>=lx&&p.x<=rx&&p.y>=ly&&p.y<=ry)sel.add(i)}
+ for(var i=0;i<pc.length;i++){var p=pc[i];if(!p.al||p.owner!==mpMyOwner)continue;if(p.x>=lx&&p.x<=rx&&p.y>=ly&&p.y<=ry)sel.add(i)}
 
  uSI();
 
@@ -1235,6 +1212,7 @@ function fleeGen(te,gn){ // pasukan habis: jenderal kabur ke wilayah jendral TET
  fug.push({g:gn,d:best,from:te});
 }
 function cmdTick(dt){
+ return; // AI musuh netral DIHAPUS (mode tim vs tim, tidak ada garnisun wilayah netral)
  var P=null;
  for(var f=fug.length-1;f>=0;f--){
   var fr=fug[f],gn=fr.g,d2=tr[fr.d];
@@ -1344,7 +1322,7 @@ function genZones(){
   for(var z=0;z<nz;z++){
    for(var k=0;k<25;k++){
     var pt=(te.nm==="Hutan Sancang")?randPtInPolyMinX(te,2300):randPtInPoly(te),r=((ty==="api"?50:70)+Math.random()*60)*3;
-    if(isWater(pt.x,pt.y)||(function(){for(var o=0;o<4;o++){if(pgens[o]&&ds(pt,pgens[o])<400)return true}return false})()||(te.gp&&ds(pt,te.gp)<r+120))continue;
+    if(isWater(pt.x,pt.y)||(function(){for(var o=0;o<8;o++){if(pgens[o]&&ds(pt,pgens[o])<400)return true}return false})()||(te.gp&&ds(pt,te.gp)<r+120))continue;
     hz.push({t:ty,x:pt.x,y:pt.y,r:r,poly:mkBlob(pt.x,pt.y,r)});break;
    }
   }
@@ -1414,7 +1392,7 @@ function update(dt){
 
   var p=al[i];
 
-  if(p.t!=="p"||!p.form||!p.gid)continue;
+  if(!p.form||!p.gid)continue; // formasi berlaku sama utk tim manapun (A/B)
 
   if(!byGid[p.gid])byGid[p.gid]=[];
 
@@ -1509,7 +1487,7 @@ function update(dt){
 
   var p=al[i];
 
-  if(p.rt||p.tgt||!p.obey||p.t!=="p"||p.ord!=="move")continue;
+  if(p.rt||p.tgt||!p.obey||p.ord!=="move")continue; // GoTo berlaku sama utk tim manapun
 
   var destX=p.gtx+p.ox,destY=p.gty+p.oy;
 
@@ -1723,7 +1701,7 @@ function update(dt){
 
   // Formasi: begitu sudah sampai slotnya, TETAP menghadap musuh kalau ada target (biar bisa nyerang tanpa
   // bergerak/bongkar barisan); kalau tak ada musuh, baru menghadap arah radial formasi (globus) / arah slot.
-  if(p.t==="p"&&p.form&&p.formAng!=null){
+  if(p.form&&p.formAng!=null){ // formasi: berlaku sama utk tim manapun (A/B)
    var destX=p.gtx+p.ox,destY=p.gty+p.oy;
    if(ds(p,{x:destX,y:destY})<=SR*1.2){
     var tg=p.tgt?aT(p,p.tgt):p.formAng,df=nA(tg-p.a);p.a+=df*Math.min(1,3*dt);
@@ -1742,7 +1720,7 @@ function update(dt){
 
 
  for(var i=0;i<al.length;i++){var pq=al[i];if(pq.role==="inf"||pq.gen){pq.tgt=null;pq.zone=null;pq.orbiting=null}}
- for(var _sg=0;_sg<4;_sg++){var pgen=pgens[_sg];if(!(pgen&&pgen.al))continue; // SEMUA jenderal punya siaga
+ for(var _sg=0;_sg<8;_sg++){var pgen=pgens[_sg];if(!(pgen&&pgen.al))continue; // SEMUA jenderal (termasuk tim lawan & bot) punya siaga
   // Mode SIAGA jendral: radius 1.5x jangkauan bidak (AR). Kalau ada musuh masuk radius ini, jendral
   // TIDAK ikut bertarung/mendekat, melainkan kabur ke BELAKANG kerumunan bidak sendiri (posisi menjauh
   // dari arah musuh) - urutan akhir jadi jendral-bidak-musuh. Kalau aman lagi, balik ke slot formasi
@@ -1753,11 +1731,11 @@ function update(dt){
   // lewat di dekatnya) - dlm 2 kondisi ini SIAGA kabur di-skip, jendral selalu balik ke slot formasinya.
   var protectedCenter=pgen.gotoOrder||(pgen.formSnap==="globus"&&pgen.genModeSnap==="tengah");
   var nd=1e9,threatE=null;
-  for(var i=0;i<al.length;i++){var pe=al[i];if(pe.t==="e"){var d=ds(pe,pgen);if(d<nd){nd=d;threatE=pe}}}
+  for(var i=0;i<al.length;i++){var pe=al[i];if(pe.team!==pgen.team){var d=ds(pe,pgen);if(d<nd){nd=d;threatE=pe}}} // ancaman = bidak TIM LAWAN jenderal ini
   var standbyR=AR*1.5;
   if(!protectedCenter&&threatE&&nd<standbyR){
    var sx=0,sy=0,sn=0;
-   for(var i=0;i<al.length;i++){var pe=al[i];if(pe.t==="p"&&!pe.gen&&ds(pe,pgen)<600){sx+=pe.x;sy+=pe.y;sn++}}
+   for(var i=0;i<al.length;i++){var pe=al[i];if(pe.team===pgen.team&&!pe.gen&&ds(pe,pgen)<600){sx+=pe.x;sy+=pe.y;sn++}} // kerumunan TIM SENDIRI jenderal ini
    if(sn){
     var cx=sx/sn,cy=sy/sn,dxh=cx-threatE.x,dyh=cy-threatE.y,dlh=Math.sqrt(dxh*dxh+dyh*dyh)||1;
     pgen.obey=true;pgen.ord="move";pgen.form=null;pgen.gid=0;pgen.ox=0;pgen.oy=0;
@@ -1850,8 +1828,10 @@ function update(dt){
 
    if(dd>4){var a2=aT(p,{x:destX,y:destY});dx=Math.cos(a2)*sp;dy=Math.sin(a2)*sp}
 
-  }else if((p.t==="p"||p.cmd)&&p.ord==="move"){
-
+  }else if(p.ord==="move"){
+   // Tim vs tim: SEMUA bidak (tim A maupun B, manusia maupun bot) bergerak lewat perintah dgn cara
+   // yg sama persis - tidak ada lagi perbedaan "sekutu bebas gerak" vs "musuh netral patroli wilayah"
+   // (sistem AI netral per-wilayah sudah dihapus total, lihat cmdTick()).
    var destX=p.gtx+p.ox,destY=p.gty+p.oy;
 
    var dd=ds(p,{x:destX,y:destY});
@@ -1860,11 +1840,7 @@ function update(dt){
 
    else{p.ord=null}
 
-  }else if(p.t==="e"&&p.i>=0&&!p.cmd){
-
-   var te=tr[p.i];var d2=ds(p,te);
-
-   if(d2>te.r*0.65){var a2=aT(p,te);dx=Math.cos(a2)*sp*0.5;dy=Math.sin(a2)*sp*0.5}
+  }else if(false){
 
   }
 
@@ -2085,116 +2061,60 @@ function update(dt){
 
   for(var t=0;t<tr.length;t++){
 
-   var te=tr[t];if(te.tm==="p")continue;
+   var te=tr[t];
 
-   var eI=0,pI=0;
-
-   for(var i=0;i<al.length;i++){if(pip(te.poly,al[i].x,al[i].y)){if(al[i].t==="e"&&al[i].i===t)eI++;else if(al[i].t==="p")pI++}}
-
-   // === FOG OF WAR PER-WILAYAH ===
-   // Musuh di wilayah ini cuma "aktif" (terlihat & ikut simulasi) selama minimal 1 bidak pemain
-   // sedang BERADA di dalam poligon wilayah tsb. Begitu bidak terakhir keluar, semua musuh di
-   // wilayah itu disembunyikan lagi (bukan dihapus - hp/posisi tetap tersimpan apa adanya,
-   // jadi kalau diintai ulang nanti sisa pasukannya masih sama seperti terakhir ditinggal).
-   var justRevealed=false;
-
-   if(pI>0&&!te.revealed){
-
-    te.revealed=true;justRevealed=true;
-
-    for(var qi=0;qi<pc.length;qi++){var q=pc[qi];if(q.t==="e"&&q.i===t&&q.al)q.hidden=false}
-
-   }else if(pI===0&&te.revealed&&te.st!=="lead"){
-
-    te.revealed=false;
-
-    for(var qi=0;qi<pc.length;qi++){var q=pc[qi];if(q.t==="e"&&q.i===t&&q.al)q.hidden=true}
-
-   }
-
-   // eI dihitung dari `al` yg belum memasukkan musuh yg BARU SAJA di-reveal tick ini (baru masuk
-   // tick berikutnya) - jadi capture check ditunda 1 tick (~0.25dtk) kalau baru saja reveal,
-   // supaya tidak salah anggap wilayah kosong padahal garnisunnya baru saja tersingkap.
-   if(!justRevealed&&eI===0&&pI>0&&!(te.gp&&te.gp.al)&&!(te.gp2&&te.gp2.al)){te.tm="p";mcDirty=true;tK('Wilayah "'+te.nm+'" ditaklukkan!')}
+   // PENAKLUKAN WILAYAH (tim vs tim): wilayah brpindah tangan kalau DIINJAK - ada bidak dari
+   // SATU tim saja di dalam poligonnya (bidak tim lain nihil). Kalau kedua tim sama2 hadir
+   // (lagi baku hantam di wilayah itu), status TIDAK berubah dulu sampai salah satu minggir/kalah.
+   // Markas sendiri (Hutan Sancang utk A, Giri Kancana utk B) tidak bisa direbut baliknya sendiri,
+   // tapi BISA direbut tim lawan kalau kosong dari tim pemilik & diisi lawan (markas tetap wilayah
+   // normal setelah mulai, cuma beda titik awal kepemilikan).
+   var aI=0,bI=0;
+   for(var i=0;i<al.length;i++){if(pip(te.poly,al[i].x,al[i].y)){if(al[i].team==="A")aI++;else if(al[i].team==="B")bI++}}
+   var newTm=null;
+   if(aI>0&&bI===0)newTm="A"; else if(bI>0&&aI===0)newTm="B";
+   if(newTm&&te.tm!==newTm){te.tm=newTm;mcDirty=true;tK('Wilayah "'+te.nm+'" direbut tim '+(newTm==="A"?"HIJAU":"MERAH")+'!')}
 
   }
  }
 
+ // (konversi jenderal-wilayah-musuh dihapus - sistem AI netral tidak lagi dipakai)
 
-
- // === JENDERAL: cegah mundur, konversi pasukan saat jenderal wilayah gugur ===
- for(var _wo=0;_wo<4;_wo++){
-  var wg=pgens[_wo];if(!wg)continue;
-  wg.rt=false;
-  if(wg.hp<wg.mhp*0.4&&!wg.warn&&wg.al){wg.warn=true;__warnQ.push(_wo)}
-  else if(wg.hp>wg.mhp*0.6)wg.warn=false;
- }
- for(var t=0;t<tr.length;t++){
-  var te=tr[t];if(!te.gp&&!te.gp2)continue;
-  if(te.gp)te.gp.rt=false;if(te.gp2)te.gp2.rt=false;
-  if(!(te.gp&&te.gp.al)&&!(te.gp2&&te.gp2.al)&&!te.conv){
-   te.conv=true;var nc=0;
-   // round-robin: bidak yg beralih dibagi RATA hanya ke owner yg AKTIF (slot terisi) - owner
-   // kosong (mis. cuma main bertiga) dilewati, supaya tidak ada bidak "hilang" ke slot kosong.
-   var activeOwners=[];for(var oi=0;oi<4;oi++)if(mpPlayers[oi])activeOwners.push(oi);
-   var rrIdx=0;
-   for(var qi=0;qi<pc.length;qi++){
-    var q=pc[qi];
-    if(q.t==="e"&&q.i===t&&q.al){q.t="p";q.i=-1;q.owner=activeOwners[rrIdx%activeOwners.length];rrIdx++;q.hidden=false;q.tgt=null;q.zone=null;q.ord=null;q.obey=false;q.form=null;q.gid=0;q.rt=false;q.holdBack=false;q.orbiting=null;q.cmd=false;q.role="atk";q.runner=false;q.hf=0.4;nc++}
-   }
-   for(var qi=0;qi<pc.length;qi++){var q=pc[qi];if(q.tgt&&q.tgt.t===q.t){q.tgt=null;q.zone=null;q.orbiting=null}}
-   tK('Jenderal '+te.rl+' dari '+te.nm+' gugur! '+nc+' pasukan dibagi rata ke semua jenderal');
-  }
- }
  // Hitung
  var pa=0,ea=0;
-
- for(var i=0;i<al.length;i++){if(al[i].t==="p")pa++;else ea++}
-
+ for(var i=0;i<al.length;i++){if(al[i].team==="A")pa++;else ea++}
  document.getElementById("pC").textContent=pa;
+ document.getElementById("eC").textContent=ea;
 
- document.getElementById("eC").textContent=ea; // HUD sengaja cuma tampilkan musuh yg sudah keliatan (fog of war)
+ var cA=0,cB=0;for(var t=0;t<tr.length;t++){if(tr[t].tm==="A")cA++;else if(tr[t].tm==="B")cB++}
+ document.getElementById("tC").textContent=cA+"/20 vs "+cB+"/20";
 
- var cp=0;for(var t=0;t<tr.length;t++)if(tr[t].tm==="p")cp++;
-
- document.getElementById("tC").textContent=cp+"/20";
-
- // PENTING: cek menang/kalah HARUS pakai jumlah musuh TOTAL yg masih hidup (termasuk yg masih
- // hidden/blm diintai lewat fog of war), BUKAN cuma `ea` yg sudah difilter hidden di atas.
- // Kalau pakai `ea`, di awal game semua musuh msh hidden => ea=0 => dikira "menang" padahal
- // musuhnya masih ada, cuma belum diintai - ini yg bikin game langsung freeze di awal.
- var eaTotal=0;for(var i=0;i<pc.length;i++)if(pc[i].al&&pc[i].t==="e")eaTotal++;
-
- // ====== RESPAWN PER-OWNER (ala MOBA) ======
+ // ====== RESPAWN PER-OWNER (ala MOBA, berlaku jg utk BOT - tim vs tim) ======
  // Owner kalah (jendral tumbang) mulai timer respawn; kalau timer habis, 25 bidak+jendral direset
- // total di markas owner itu. Kekalahan TOTAL cuma terjadi kalau ke-4 owner mati BERSAMAAN
- // (tak ada satupun yg masih hidup utk "menunggu" respawn owner lain).
+ // total di markas owner itu. Berlaku SAMA utk pemain manusia maupun bot (owner tanpa pembeda).
  var nowMs=performance.now();
- for(var oi=0;oi<4;oi++){
+ for(var oi=0;oi<8;oi++){
   var og=pgens[oi];
   if(!og)continue;
-  var ownerAlive=og.al; // owner dianggap kalah saat JENDERAL-nya tumbang (sisa bidak ikut hangus saat respawn)
+  var ownerAlive=og.al;
   if(!ownerAlive){
    if(mpRespawnTimers[oi]===0){
     mpRespawnTimers[oi]=nowMs+mpRespawnDelaySec()*1000;
-    __deathQ.push(oi); // server kirim pesan ini hanya ke pemilik jenderal
+    __deathQ.push(oi);
    } else if(nowMs>=mpRespawnTimers[oi]){
     mpRespawnOwner(oi);
     mpRespawnTimers[oi]=0;
    }
   } else if(mpRespawnTimers[oi]!==0){
-   mpRespawnTimers[oi]=0; // owner ternyata masih ada bidak hidup (jarang, tp jaga2), batalkan timer
+   mpRespawnTimers[oi]=0;
   }
  }
 
- var anyOwnerAlive=false;
- for(var oi=0;oi<4;oi++){
-  if(pgens[oi]&&pgens[oi].al){anyOwnerAlive=true;break}
+ // ====== MENANG/KALAH: kuasai SEMUA 20 wilayah (kedua markas + 18 netral) ======
+ if(!go){
+  if(cA>=20){go=true;winnerTeam="A";tK("TIM HIJAU MENGUASAI SELURUH WILAYAH!")}
+  else if(cB>=20){go=true;winnerTeam="B";tK("TIM MERAH MENGUASAI SELURUH WILAYAH!")}
  }
-
- if(!anyOwnerAlive&&!go){go=true;tK("KEKALAHAN TOTAL! Semua jenderal gugur bersamaan")}
-
- else if(eaTotal===0&&!go){go=true;tK("KEMENANGAN!")}
 
 }
 
@@ -2383,7 +2303,7 @@ function render(){
   // Fog of war KOOPERATIF: gabungan jarak pandang dari SEMUA jendral tim yg masih hidup (bukan cuma
   // jendral lokal), supaya tiap pemain bisa lihat area yg sudah dijelajah rekan setimnya juga.
   var anyGenSees=false;
-  for(var _gi=0;_gi<4;_gi++){var _g=pgens[_gi];if(_g&&_g.al){var gdx=p.x-_g.x,gdy=p.y-_g.y;if(gdx*gdx+gdy*gdy<=GEN_SIGHT*GEN_SIGHT){anyGenSees=true;break}}}
+  for(var _gi=0;_gi<8;_gi++){var _g=pgens[_gi];if(_g&&_g.al){var gdx=p.x-_g.x,gdy=p.y-_g.y;if(gdx*gdx+gdy*gdy<=GEN_SIGHT*GEN_SIGHT){anyGenSees=true;break}}}
   if(!anyGenSees&&p!==pgen)continue;
 
   var isP=p.t==="p",ppA=p.a+Math.PI/2,isMyGen=isP&&p.gen&&p.owner===mpMyOwner; // isMyGen = jendral pemain LOKAL (pakai foto profil sendiri)
@@ -2648,4 +2568,36 @@ function mpEnterGame(){
 function __zonesForClient(){
  if(!hz){try{genZones()}catch(e){hz=[]}}
  return hz.map(function(z){return {t:z.t,x:Math.round(z.x),y:Math.round(z.y),r:Math.round(z.r),poly:z.poly.map(function(q){return [Math.round(q.x),Math.round(q.y)]})}});
+}
+
+
+// ====== BOT AI (mode "VS AI" atau slot kosong yg diisi bot saat lobi habis waktu) ======
+// Bot = pemain virtual yg dikendalikan server: jalankan orderMove() periodik spt pemain
+// manusia (via select bidak + kirim target), BUKAN AI unik baru. Sengaja sederhana: tiap
+// beberapa detik, bot memilih target serang (wilayah netral terdekat belum dikuasai timnya,
+// atau wilayah lawan kalau netral sudah habis) dan mengirim SEMUA bidak hidupnya ke sana.
+var __botT=0;
+function __winningTeam(){ return winnerTeam; }
+function __botTick(){
+ __botT-=1/20; if(__botT>0)return; __botT=2.5+Math.random()*1.5; // tiap ~2.5-4 dtk, biar tak spam orderMove
+ for(var oi=0;oi<8;oi++){
+  if(!(mpPlayers[oi]&&mpBots&&mpBots[oi]))continue;
+  var g=pgens[oi]; if(!g||!g.al)continue;
+  var myTeam=OWNER_TEAM[oi];
+  // prioritas target: wilayah netral terdekat, kalau tak ada -> wilayah musuh terdekat
+  var best=null,bd=1e18;
+  for(var t=0;t<tr.length;t++){
+   var te=tr[t]; if(te.tm===myTeam)continue;
+   var pref=te.tm==="n"?0:1; // netral diprioritaskan drpd rebut wilayah lawan
+   var d=Math.hypot(te.cx-g.x,te.cy-g.y)+pref*999999;
+   if(d<bd){bd=d;best=te}
+  }
+  if(!best)continue;
+  var ids=[];for(var qi=0;qi<pc.length;qi++){if(pc[qi].owner===oi&&pc[qi].al)ids.push(qi)}
+  if(!ids.length)continue;
+  var savedSel=sel,savedFormMode=formMode,savedMoveMode=moveMode;
+  sel=new Set(ids);formMode=null;moveMode="atk";
+  orderMove(best.cx+(Math.random()-.5)*160, best.cy+(Math.random()-.5)*160);
+  sel=savedSel;formMode=savedFormMode;moveMode=savedMoveMode;
+ }
 }

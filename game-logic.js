@@ -11,16 +11,19 @@ var GEN_SIGHT=1000; // jarak pandang jendral pemain (unit dunia) - bidak/musuh y
 // dunia, tak peduli tergambar atau tidak) & tetap bisa diperintah gerak spt biasa.
 var playerName="Jenderal",playerPhotoImg=null,playerPhotoDataURL=null; // nama & foto profil jendral pemain, diisi dari halaman awal (#ov)
 
-// ====== MULTIPLAYER (server dedicated via WebSocket) ======
+// ====== MULTIPLAYER (server dedicated via WebSocket, TIM vs TIM) ======
 // Server (Railway) menjalankan SELURUH simulasi. Client hanya: kirim input, terima snapshot,
 // interpolasi supaya gerak halus, lalu render() asli.
-var OWNER_COLORS=["#d4a832","#4488ff","#44c470","#a86633"]; // kuning, biru, hijau, coklat (bukan merah - sama dgn warna musuh)
-var OWNER_NAMES=["Jenderal 1","Jenderal 2","Jenderal 3","Jenderal 4"];
-var mpIsHost=false,mpMyOwner=0,mpGameStarted=false,mpEnded=false;
-var mpWs=null,mpPlayers=[null,null,null,null],mpPhotoImgs=[null,null,null,null];
-var pgens=[null,null,null,null]; // referensi jenderal tiap owner (diisi dari snapshot)
-var mpRespawnLeft=[0,0,0,0],mpGameMin=0;
-var mpSnapPrev=null,mpSnapCur=null,mpSnapTime=0,mpSnapInterval=100; // (dipertahankan utk kompatibilitas)
+// 8 slot: 0-3 = tim HIJAU "A" (markas Hutan Sancang), 4-7 = tim MERAH "B" (markas Giri Kancana).
+var OWNER_COLORS=["#6fcf6f","#3fae3f","#2a8a2a","#1a6b1a","#e06a6a","#c43c3c","#9c2222","#6e1414"]; // 4 corak hijau (A) + 4 corak merah (B)
+var OWNER_NAMES=["Hijau 1","Hijau 2","Hijau 3","Hijau 4","Merah 1","Merah 2","Merah 3","Merah 4"];
+var OWNER_TEAM=["A","A","A","A","B","B","B","B"];
+var mpIsHost=false,mpMyOwner=0,mpMyTeam="A",mpGameStarted=false,mpEnded=false;
+var mpWs=null,mpPlayers=new Array(8).fill(null),mpPhotoImgs=new Array(8).fill(null);
+var pgens=new Array(8).fill(null); // referensi jenderal tiap owner (diisi dari snapshot)
+var mpRespawnLeft=new Array(8).fill(0),mpGameMin=0;
+var mpMode="pvp",mpTeamSize=4; // diisi dari pilihan lobi: "pvp"|"ai", ukuran tim 1-4
+var mpSnapPrev=null,mpSnapCur=null,mpSnapTime=0,mpSnapInterval=100;
 // Interpolasi: gambar bidak di posisi 'agak lampau' (mpRenderDelay) di antara 2 snapshot yg sudah diterima,
 // sehingga selalu ada 2 titik utk digeser LURUS. Delay menyesuaikan jitter jaringan secara otomatis.
 var mpHist=[];                 // riwayat snapshot: {t:waktu terima(ms), m:{id:[x,y,a]}}
@@ -30,20 +33,28 @@ var mpHudDirty=false;
 var SERVER_URL=(window.WAR_SERVER_URL||"wss://GANTI-DENGAN-DOMAIN-RAILWAY.up.railway.app");
 
 function mpLoadPhotoImgs(){
- for(var i=0;i<4;i++){
+ for(var i=0;i<8;i++){
   var pl=mpPlayers[i];
   if(pl&&pl.photo&&!mpPhotoImgs[i]){var im=new Image();im.src=pl.photo;mpPhotoImgs[i]=im}
   else if(!pl){mpPhotoImgs[i]=null}
  }
 }
 function mpSend(o){ if(mpWs&&mpWs.readyState===1) mpWs.send(JSON.stringify(o)) }
+function mpFilledCount(){ var n=0;for(var i=0;i<8;i++)if(mpPlayers[i])n++;return n }
 
-function mpConnect(name,photo,onStatus){
+// mode: "party" (Cari Teman, isi tim HIJAU bareng teman) atau "match" (Cari Match, dipasangkan otomatis).
+// vs: "ai" atau "pvp". teamSize: 1-4 (1v1 s/d 4v4).
+function mpConnect(name,photo,vs,teamSize,joinMode,onStatus){
+ mpMode=vs;mpTeamSize=teamSize;
  onStatus("Menyambung ke server...");
  try{ mpWs=new WebSocket(SERVER_URL) }catch(e){ onStatus("Alamat server tidak valid."); return }
  var opened=false;
  var connTimer=setTimeout(function(){ if(!opened){ onStatus("Server tidak merespons (10 dtk). Cek alamat server / coba lagi."); if(window.mpLobbyBusy)window.mpLobbyBusy(); try{mpWs.close()}catch(e){} } },10000);
- mpWs.onopen=function(){ opened=true;clearTimeout(connTimer);onStatus("Mencari match..."); mpSend({type:"find",name:name,photo:photo}) };
+ mpWs.onopen=function(){
+  opened=true;clearTimeout(connTimer);
+  onStatus(joinMode==="party"?"Mencari/membuat party...":"Mencari match...");
+  mpSend({type:joinMode,vs:vs,teamSize:teamSize,name:name,photo:photo});
+ };
  mpWs.onerror=function(){ clearTimeout(connTimer);onStatus("Gagal terhubung ke server. Cek alamat wss:// dan koneksi internet."); if(window.mpLobbyBusy)window.mpLobbyBusy() };
  mpWs.onclose=function(ev){
   clearTimeout(connTimer);
@@ -55,17 +66,18 @@ function mpConnect(name,photo,onStatus){
  };
  mpWs.onmessage=function(ev){
   var m; try{m=JSON.parse(ev.data)}catch(e){return}
-  if(m.type==="assignOwner"){ mpMyOwner=m.owner }
+  if(m.type==="assignOwner"){ mpMyOwner=m.owner;mpMyTeam=m.team }
   else if(m.type==="busy"){ onStatus(m.message); if(window.mpLobbyBusy)window.mpLobbyBusy() }
+  else if(m.type==="party"){ if(window.mpPartyInfo)window.mpPartyInfo(m) }
   else if(m.type==="lobby"){
    mpPlayers=m.players;mpLoadPhotoImgs();
-   var n=0;for(var i=0;i<4;i++)if(mpPlayers[i])n++;
+   var n=mpFilledCount();
    var s=Math.ceil((m.startsInMs||0)/1000);
-   onStatus("Menunggu pemain ("+n+"/4)"+(m.startsInMs!=null?" — mulai dlm "+s+" dtk":""));
-   if(window.mpRenderLobbyList)window.mpRenderLobbyList();
+   onStatus("Menunggu pemain ("+n+"/"+(m.teamSize*2)+")"+(m.startsInMs!=null?" — mulai dlm "+s+" dtk":""));
+   if(window.mpRenderLobbyList)window.mpRenderLobbyList(m);
   }
   else if(m.type==="start"){
-   mpPlayers=m.players;mpLoadPhotoImgs();mpGameStarted=true;
+   mpPlayers=m.players;mpLoadPhotoImgs();mpGameStarted=true;mpMode=m.mode;mpTeamSize=m.teamSize;
    document.getElementById("ov").classList.add("hd");
    mpEnterGame();
    // Zona api/lumpur/air suci dari server -> isi hz agar render() lama menggambarnya
@@ -79,7 +91,7 @@ function mpConnect(name,photo,onStatus){
 function mpShowGameEnd(reason){
  mpEnded=true;
  var ov=document.getElementById("mpEndOv");
- if(ov){ document.getElementById("mpEndMsg").textContent=reason||"PERANG BERAKHIR"; ov.classList.remove("hd"); }
+ if(ov){ document.getElementById("mpEndMsg").textContent=reason||"PERTEMPURAN BERAKHIR"; ov.classList.remove("hd"); }
 }
 
 // Snapshot dari server -> bangun ulang pc (hanya bidak yg TERLIHAT). Posisi diinterpolasi di mpInterpolate().
@@ -101,26 +113,28 @@ function mpOnSnapshot(m){
   mpRenderDelay+=(want-mpRenderDelay)*0.05;            // naik/turun pelan supaya tidak terasa berubah-ubah
  }
  mpLastArrive=now;
- for(var k=0;k<m.t.length&&k<tr.length;k++)tr[k].tm=m.t[k]?"p":"e";
+ for(var k=0;k<m.t.length&&k<tr.length;k++)tr[k].tm=m.t[k]||"n";
  // Siapkan pc tetap (indeks = indeks asli server, agar sel/perintah cocok). Bidak tak terlihat => hidden.
  var maxId=0;for(var q=0;q<m.ids.length;q++)if(m.ids[q]>maxId)maxId=m.ids[q];
  for(var j=0;j<m.gens.length;j++){var g=m.gens[j];if(g&&g[2]>maxId)maxId=g[2]}
- while(pc.length<=maxId)pc.push({x:0,y:0,a:0,t:"e",i:-1,hp:0,mhp:100,gen:false,al:false,hidden:true,owner:0,hf:0,ord:null,tgt:null,orbiting:null,rt:false,obey:false,form:null,formAng:0,mem:0});
+ while(pc.length<=maxId)pc.push({x:0,y:0,a:0,t:"B",i:-1,hp:0,mhp:100,gen:false,al:false,hidden:true,owner:0,team:"B",hf:0,ord:null,tgt:null,orbiting:null,rt:false,obey:false,form:null,formAng:0,mem:0});
  for(var n=0;n<pc.length;n++){ if(!idx[n]){ pc[n].al=false;pc[n].hidden=true } }
  for(var r=0;r<m.ids.length;r++){
   var id=m.ids[r],d=m.p[r],o=pc[id];
   o.tx=d[0];o.ty=d[1];o.ta=d[2];
   if(!o.al||o.hidden){o.x=d[0];o.y=d[1];o.a=d[2]} // baru muncul: langsung di posisi
-  o.t=d[3]?"p":"e";o.i=d[4];o.hp=d[5];o.mhp=d[6];o.gen=!!d[7];o.owner=d[8];o.hf=d[9]?0.2:0;o.ord=d[10]?"move":null;
+  o.t=d[3]?"A":"B";o.team=o.t;o.i=d[4];o.hp=d[5];o.mhp=d[6];o.gen=!!d[7];o.owner=d[8];o.hf=d[9]?0.2:0;o.ord=d[10]?"move":null;
   o.al=true;o.hidden=false;
  }
- for(var oi=0;oi<4;oi++){ var gg=m.gens[oi]; pgens[oi]=(gg&&gg[0])?pc[gg[2]]:null; }
+ for(var oi=0;oi<8;oi++){ var gg=m.gens[oi]; pgens[oi]=(gg&&gg[0])?pc[gg[2]]:null; }
  pgen=pgens[mpMyOwner];
  mpRespawnLeft=m.rs;mpGameMin=m.min;
- document.getElementById("pC").textContent=m.pa;
- document.getElementById("tC").textContent=m.cp+"/20";
- var eCnt=0;for(var e2=0;e2<m.p.length;e2++)if(!m.p[e2][3])eCnt++;
- document.getElementById("eC").textContent=eCnt;
+ // HUD: "pC"/"eC" skrng berarti jml bidak TERLIHAT milik timku vs tim lawan (bukan lagi sekutu/musuh AI)
+ var myAl=0,enAl=0;
+ for(var e3=0;e3<m.p.length;e3++){ if(m.p[e3][3]===(mpMyTeam==="A"?1:0))myAl++; else enAl++; }
+ document.getElementById("pC").textContent=myAl;
+ document.getElementById("eC").textContent=enAl;
+ document.getElementById("tC").textContent="Hijau "+m.cA+"/20 — Merah "+m.cB+"/20";
  var me=m.gens[mpMyOwner];
  document.getElementById("gH").textContent=me?me[1]:0;
  if(m.toasts){for(var ti=0;ti<m.toasts.length;ti++)tK(m.toasts[ti])}
@@ -242,8 +256,9 @@ function drawMinimapBase(sx,sy){
   var te=tr[t];mcCtx.beginPath();
   for(var vi=0;vi<te.poly.length;vi++){var vp=te.poly[vi];if(vi===0)mcCtx.moveTo(vp[0]*sx,vp[1]*sy);else mcCtx.lineTo(vp[0]*sx,vp[1]*sy);}
   mcCtx.closePath();
-  if(te.tm==="p"){mcCtx.fillStyle="rgba(74,154,74,.45)";mcCtx.fill();}
-  mcCtx.strokeStyle=te.tm==="p"?"#4a9a4a":te.bc;mcCtx.lineWidth=0.7;mcCtx.stroke();
+  if(te.tm==="A"){mcCtx.fillStyle="rgba(74,154,74,.45)";mcCtx.fill();}
+  else if(te.tm==="B"){mcCtx.fillStyle="rgba(196,64,64,.45)";mcCtx.fill();}
+  mcCtx.strokeStyle=te.tm==="A"?"#4a9a4a":te.tm==="B"?"#c44040":te.bc;mcCtx.lineWidth=0.7;mcCtx.stroke();
  }
  mcDirty=false;
 }
@@ -360,7 +375,7 @@ function randPtInPolyMinX(te,minX){
 
 // BIDAK
 
-function mkP(x,y,t,i){return{x:x,y:y,t:t,i:i,a:t==="p"?0:Math.PI,ox:x,oy:y,ord:null,gtx:null,gty:null,tgt:null,zone:null,orbiting:null,orbitDir:(Math.random()>0.5?1:-1),gid:0,al:true,hp:100,mhp:100,gen:false,rt:false,rt2:0,hf:0,eng:null,moc:0,obey:false,form:null,formAng:0,gotoBlock:false,slotIdx:0,hidden:false,owner:0}}
+function mkP(x,y,t,i){return{x:x,y:y,t:t,i:i,a:t==="A"?0:Math.PI,ox:x,oy:y,ord:null,gtx:null,gty:null,tgt:null,zone:null,orbiting:null,orbitDir:(Math.random()>0.5?1:-1),gid:0,al:true,hp:100,mhp:100,gen:false,rt:false,rt2:0,hf:0,eng:null,moc:0,obey:false,form:null,formAng:0,gotoBlock:false,slotIdx:0,hidden:false,owner:0,team:null}}
 
 
 
@@ -548,7 +563,7 @@ function sRx(x0,y0,x1,y1){
 
  sel.clear();
 
- for(var i=0;i<pc.length;i++){var p=pc[i];if(!p.al||p.t!=="p"||p.owner!==mpMyOwner)continue;if(p.x>=lx&&p.x<=rx&&p.y>=ly&&p.y<=ry)sel.add(i)}
+ for(var i=0;i<pc.length;i++){var p=pc[i];if(!p.al||p.owner!==mpMyOwner)continue;if(p.x>=lx&&p.x<=rx&&p.y>=ly&&p.y<=ry)sel.add(i)}
 
  uSI();
 
@@ -2268,17 +2283,18 @@ function render(){
 
   cx.closePath();
 
-  cx.fillStyle=te.tm==="p"?"rgba(74,154,74,.22)":te.cl;cx.fill();
+  // Wilayah: HIJAU = tim A (markas Hutan Sancang), MERAH = tim B (markas Giri Kancana), warna asli = netral
+  cx.fillStyle=te.tm==="A"?"rgba(74,154,74,.22)":te.tm==="B"?"rgba(196,64,64,.22)":te.cl;cx.fill();
 
   cx.setLineDash([6*cam.z,4*cam.z]);
 
-  cx.strokeStyle=te.tm==="p"?"#4a9a4a":te.bc;
+  cx.strokeStyle=te.tm==="A"?"#4a9a4a":te.tm==="B"?"#c44040":te.bc;
 
   cx.lineWidth=Math.max(1,1.5*cam.z);cx.stroke();cx.setLineDash([]);
 
   var c=b2s(te.cx,te.cy),r=te.r*cam.z;
 
-  cx.fillStyle=te.tm==="p"?"#bfe6bf":"#fff7d8";
+  cx.fillStyle=te.tm==="A"?"#bfe6bf":te.tm==="B"?"#ffd0d0":"#fff7d8";
 
   cx.strokeStyle="rgba(0,0,0,.85)";cx.lineWidth=Math.max(0.9,3.6*cam.z);
 
@@ -2288,7 +2304,10 @@ function render(){
 
   cx.fillText(te.nm,c.x,c.y);
 
-  if(te.tm==="p"){var tkY=c.y+Math.max(15,19*cam.z);cx.fillStyle="#bfe6bf";cx.strokeText("[TAKLUK]",c.x,tkY);cx.fillText("[TAKLUK]",c.x,tkY)}
+  if(te.tm==="A"||te.tm==="B"){
+   var tkY=c.y+Math.max(15,19*cam.z),tkLabel=te.tm==="A"?"[HIJAU]":"[MERAH]",tkCol=te.tm==="A"?"#bfe6bf":"#ffd0d0";
+   cx.fillStyle=tkCol;cx.strokeText(tkLabel,c.x,tkY);cx.fillText(tkLabel,c.x,tkY);
+  }
 
  }
 
@@ -2332,13 +2351,12 @@ function render(){
   if(s.x<-20||s.x>cv.width+20||s.y<-20||s.y>cv.height+20)continue;
   // Fog of war KOOPERATIF: gabungan jarak pandang dari SEMUA jendral tim yg masih hidup (bukan cuma
   // jendral lokal), supaya tiap pemain bisa lihat area yg sudah dijelajah rekan setimnya juga.
-  var anyGenSees=false;
-  for(var _gi=0;_gi<4;_gi++){var _g=pgens[_gi];if(_g&&_g.al){var gdx=p.x-_g.x,gdy=p.y-_g.y;if(gdx*gdx+gdy*gdy<=GEN_SIGHT*GEN_SIGHT){anyGenSees=true;break}}}
-  if(!anyGenSees&&p!==pgen)continue;
-
-  var isP=p.t==="p",ppA=p.a+Math.PI/2,isMyGen=isP&&p.gen&&p.owner===mpMyOwner; // isMyGen = jendral pemain LOKAL (pakai foto profil sendiri)
-  var isOtherGen=isP&&p.gen&&p.owner!==mpMyOwner; // jendral rekan setim lain (pakai foto profil masing2, tanpa nama besar)
-  var ownerColor=OWNER_COLORS[p.owner]||"#d4a832";
+  // Tim vs tim: pandangan terbuka (tidak ada fog of war global) - kedua tim saling melihat spt
+  // game RTS pada umumnya, krn ini kompetitif (PvP/PvE), bukan kooperatif dgn "kabut perang" lawan.
+  var myTeam=OWNER_TEAM[mpMyOwner];
+  var isP=p.team===myTeam,ppA=p.a+Math.PI/2,isMyGen=isP&&p.gen&&p.owner===mpMyOwner; // isMyGen = jendral pemain LOKAL (pakai foto profil sendiri)
+  var isOtherGen=isP&&p.gen&&p.owner!==mpMyOwner; // jendral rekan SETIM lain (pakai foto profil masing2)
+  var ownerColor=OWNER_COLORS[p.owner]||(p.team==="A"?"#4a9a4a":"#c44040");
 
 
 
@@ -2364,7 +2382,7 @@ function render(){
 
   cx.beginPath();cx.moveTo(s.x,s.y);cx.arc(s.x,s.y,r,p.a+Math.PI/2,p.a+3*Math.PI/2);cx.closePath();
 
-  cx.fillStyle=isP?"#7a5a10":"#6a1a1a";cx.fill();
+  cx.fillStyle=p.team==="A"?"#3a5a1a":"#5a1a1a";cx.fill(); // belakang: gelap hijau (tim A) / gelap merah (tim B)
 
 
 
@@ -2372,7 +2390,7 @@ function render(){
 
   cx.beginPath();cx.moveTo(s.x,s.y);cx.arc(s.x,s.y,r,p.a-Math.PI/2,p.a+Math.PI/2);cx.closePath();
 
-  cx.fillStyle=p.hf>0?"#fff":(isP?ownerColor:"#c44040");cx.fill();
+  cx.fillStyle=p.hf>0?"#fff":ownerColor;cx.fill();
 
 
 
@@ -2402,11 +2420,11 @@ function render(){
 
   cx.lineTo(ax+Math.cos(p.a-2.4)*aS,ay+Math.sin(p.a-2.4)*aS);
 
-  cx.closePath();cx.fillStyle=isP?ownerColor:"#ff6666";cx.fill();
+  cx.closePath();cx.fillStyle=ownerColor;cx.fill();
 
 
 
-  if(p.gen){cx.beginPath();cx.arc(s.x,s.y,r*1.2,0,Math.PI*2);cx.strokeStyle=isP?ownerColor:"#ffb0b0";cx.lineWidth=Math.max(1.5,2.5*cam.z);cx.stroke()}
+  if(p.gen){cx.beginPath();cx.arc(s.x,s.y,r*1.2,0,Math.PI*2);cx.strokeStyle=ownerColor;cx.lineWidth=Math.max(1.5,2.5*cam.z);cx.stroke()}
   // Seleksi
   cx.beginPath();cx.arc(s.x,s.y,r,0,Math.PI*2);
 
@@ -2464,13 +2482,14 @@ function render(){
    cx.fillStyle="#fff";cx.fillText(gName,s.x,nmY);
   }
 
-  // Nama jendral musuh (penguasa wilayah) di atas badannya - sama gayanya spt nama player
-  if(!isP&&p.gen&&tr[p.i]&&tr[p.i].rl){
+  // Nama jendral TIM LAWAN di atas badannya - sama gayanya spt nama jendral tim sendiri
+  if(!isP&&p.gen){
+   var enName=(mpPlayers[p.owner]&&mpPlayers[p.owner].name)||OWNER_NAMES[p.owner];
    cx.font="bold "+Math.max(9,12*cam.z)+"px monospace";
    cx.textAlign="center";cx.textBaseline="alphabetic";
    var enmY=s.y-r-20*cam.z;
-   cx.lineWidth=Math.max(2,3*cam.z);cx.strokeStyle="#000";cx.strokeText(tr[p.i].rl,s.x,enmY);
-   cx.fillStyle="#fff";cx.fillText(tr[p.i].rl,s.x,enmY);
+   cx.lineWidth=Math.max(2,3*cam.z);cx.strokeStyle="#000";cx.strokeText(enName,s.x,enmY);
+   cx.fillStyle="#fff";cx.fillText(enName,s.x,enmY);
   }
 
  }
@@ -2527,7 +2546,7 @@ function render(){
 
   var p=pc[i];if(!p.al||p.hidden)continue;
 
-  mx.fillStyle=p.t==="p"?(OWNER_COLORS[p.owner]||"#d4a832"):"#c44040";
+  mx.fillStyle=OWNER_COLORS[p.owner]||(p.team==="A"?"#4a9a4a":"#c44040");
 
   if(p.gen){mx.fillStyle="#fff";mx.fillRect(p.x*sx-1.5,p.y*sy-1.5,3,3)}else mx.fillRect(p.x*sx-0.5,p.y*sy-0.5,1.5,1.5);
 

@@ -1,0 +1,198 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<html xmlns='http://www.w3.org/1999/xhtml' xmlns:b='http://www.google.com/2005/gml/b' xmlns:expr='http://www.google.com/2005/gml/expr'>
+<head>
+<meta charset='UTF-8'/>
+<meta content='width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no' name='viewport'/>
+<title>Perang Strategi - Tim vs Tim</title>
+<b:skin><![CDATA[
+
+
+*{margin:0;padding:0;box-sizing:border-box}
+
+body{background:#0d0f08;overflow:hidden;font-family:monospace;color:#c8bf94;-webkit-user-select:none;user-select:none;touch-action:none}
+
+canvas{display:block}
+
+#tb{position:fixed;top:0;left:0;right:0;height:36px;background:rgba(18,20,10,.93);border-bottom:1px solid #3a3a1e;display:flex;align-items:center;justify-content:space-between;padding:0 6px;font-size:10px;z-index:10}
+
+.tt2{color:#d4a832;font-weight:bold;font-size:11px;letter-spacing:1px}
+
+.sb{color:#8a8060}.sb b{color:#d4a832}.sb2 b{color:#c44040}
+
+#cb{position:fixed;bottom:0;left:0;right:0;background:rgba(18,20,10,.95);border-top:1px solid #3a3a1e;padding:4px;display:flex;flex-wrap:wrap;gap:3px;justify-content:center;align-items:center;z-index:10}
+
+.bt{padding:8px 10px;border:1px solid #4a4a2a;border-radius:3px;background:rgba(40,42,24,.85);color:#c8bf94;font-size:10px;min-width:42px;min-height:36px}
+
+.bt:active{background:rgba(80,82,44,.9);transform:scale(.93)}
+
+.bt.ac{border-color:#d4a832;color:#d4a832}
+
+.bt.dg{border-color:#8a3030;color:#c44040}
+
+.sp{width:1px;height:20px;background:#3a3a1e}
+
+.si{font-size:10px;color:#8a8060;padding:0 3px}.si b{color:#d4a832}
+
+#mw{position:fixed;top:40px;right:3px;z-index:10;border:1px solid #3a3a1e;background:rgba(14,16,8,.9);padding:1px}
+
+#ov{position:fixed;inset:0;background:rgba(10,12,6,.94);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:50;padding:16px}
+
+#ov.hd{display:none}
+
+#ov h1{color:#d4a832;font-size:20px;letter-spacing:2px;margin-bottom:10px;text-align:center}
+
+#ov p{font-size:11px;color:#8a8060;max-width:280px;text-align:center;line-height:1.5;margin-bottom:6px}
+
+.tk{position:fixed;top:40px;left:50%;transform:translateX(-50%);background:rgba(212,168,50,.14);border:1px solid #d4a832;color:#d4a832;padding:5px 12px;border-radius:3px;font-size:10px;z-index:20;pointer-events:none;white-space:nowrap;animation:ti .3s,to2 .3s 2s forwards}
+
+@keyframes ti{from{opacity:0}to{opacity:1}}
+
+@keyframes to2{to{opacity:0}}
+
+
+
+.mpCard{background:rgba(40,42,24,.6);border:1px solid #4a4a2a;border-radius:6px;padding:14px;width:280px;max-width:82vw;display:flex;flex-direction:column;gap:8px;align-items:center;margin:8px 0}
+.mpCard h2{font-size:11px;color:#8a8060;letter-spacing:1px;margin:0}
+.mpCard input{width:100%;padding:9px;border-radius:4px;border:1px solid #4a4a2a;background:rgba(20,22,12,.9);color:#c8bf94;font-size:13px;text-align:center;font-family:monospace}
+.mpAc{border-color:#d4a832 !important;color:#d4a832 !important}
+#mpRoomCode{font-size:20px;letter-spacing:4px;color:#d4a832;background:rgba(212,168,50,.1);border:1px solid #d4a832;border-radius:4px;padding:8px 14px}
+#mpStatus{font-size:11px;color:#8a8060;text-align:center;min-height:16px;max-width:80vw}
+#mpPlayerList{font-size:11px;color:#c8bf94;width:100%;display:flex;flex-direction:column;gap:4px}
+.mpPlItem{display:flex;align-items:center;gap:6px;padding:4px 8px;background:rgba(0,0,0,.2);border-radius:3px}
+.mpDot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+
+]]></b:skin>
+</head>
+<body>
+<b:section id='game-root' class='game-root-section' maxwidgets='1' showaddelement='no'>
+</b:section>
+
+
+<canvas id="C"></canvas>
+
+<div id="tb">
+
+ <span class="tt2">PERANG</span>
+
+ <span class="sb">Sekutu:<b id="pC">50</b></span>
+
+ <span class="sb2">Musuh:<b id="eC">50</b></span>
+
+ <span class="sb">Wil:<b id="tC">0/20</b></span>
+ <span class="sb">Jnd:<b id="gH">100</b>%</span>
+
+</div>
+
+<div id="mw"><canvas id="MC" width="90" height="56"></canvas></div>
+
+<div id="cb">
+
+ <span class="si">Pilih:<b id="sC">0</b></span>
+
+ <div class="sp"></div>
+
+ <button class="bt" id="bP">||</button>
+
+ <div class="sp"></div>
+
+ <button class="bt" id="bAtk">Serang</button>
+
+ <button class="bt" id="bGoto">GoTo</button>
+
+ <div class="sp"></div>
+
+ <button class="bt" id="bGlobus">Globus(o)</button>
+
+ <button class="bt" id="bSimplex">Simplex(-)</button>
+
+ <button class="bt" id="bDuplex">Duplex(=)</button>
+
+ <button class="bt" id="bVsh">V(v)</button>
+
+ <button class="bt" id="bFree">Free(f)</button>
+
+ <button class="bt" id="bJendral">Jendral: Tengah</button>
+
+</div>
+
+<div id="ov">
+
+ <h1>PERANG STRATEGI</h1>
+
+ <p id="ovSub">Tim HIJAU (Hutan Sancang) vs tim MERAH (Giri Kancana). Kuasai 20 wilayah utk menang.</p>
+
+ <div style="display:flex;flex-direction:column;align-items:center;gap:10px;margin:10px 0">
+
+  <div id="ppWrap" style="width:96px;height:96px;border-radius:50%;overflow:hidden;border:2px solid #d4a832;display:flex;align-items:center;justify-content:center;background:rgba(212,168,50,.08)">
+   <span id="ppPh" style="font-size:10px;color:#8a8060;text-align:center;padding:8px;line-height:1.4">Tap utk pilih foto profil</span>
+   <img id="ppImg" style="display:none;width:100%;height:100%;object-fit:cover"/>
+  </div>
+
+  <input type="file" id="ppFile" accept="image/*" style="display:none"/>
+
+  <input type="text" id="pName" maxlength="20" placeholder="Nama Jenderal (maks 20 karakter)" style="width:240px;max-width:80vw;padding:9px;border-radius:4px;border:1px solid #4a4a2a;background:rgba(40,42,24,.85);color:#c8bf94;font-size:13px;text-align:center;font-family:monospace"/>
+
+  <span id="pNameCnt" style="font-size:10px;color:#8a8060">0/20</span>
+
+ </div>
+
+ <!-- LANGKAH 1: pilih lawan -->
+ <div class="mpCard" id="stepVs">
+  <h2>LAWAN</h2>
+  <button class="bt mpAc" id="bVsPlayer" style="padding:12px 18px;font-size:13px">VS PLAYER</button>
+  <button class="bt mpAc" id="bVsAi" style="padding:12px 18px;font-size:13px">VS AI</button>
+ </div>
+
+ <!-- LANGKAH 2: pilih mode (1v1 s/d 4v4) -->
+ <div class="mpCard hd" id="stepMode">
+  <h2 id="modeTitle">MODE</h2>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center">
+   <button class="bt modeBt" data-n="1">1v1</button>
+   <button class="bt modeBt" data-n="2">2v2</button>
+   <button class="bt modeBt" data-n="3">3v3</button>
+   <button class="bt modeBt" data-n="4">4v4</button>
+  </div>
+  <button class="bt" id="bBackVs" style="margin-top:4px">&#8592; Kembali</button>
+ </div>
+
+ <!-- LANGKAH 3: cari teman (party) atau cari match -->
+ <div class="mpCard hd" id="stepJoin">
+  <h2 id="joinTitle">BERGABUNG</h2>
+  <button class="bt mpAc" id="bCariTeman" style="padding:12px 18px;font-size:13px">CARI TEMAN</button>
+  <button class="bt mpAc" id="bCariMatch" style="padding:12px 18px;font-size:13px">CARI MATCH</button>
+  <button class="bt" id="bCancel" style="display:none">Batal</button>
+  <div id="mpPlayerList"></div>
+  <button class="bt" id="bBackMode">&#8592; Kembali</button>
+ </div>
+
+ <div id="mpStatus"></div>
+
+</div>
+
+<style>
+.mpCard{background:rgba(40,42,24,.6);border:1px solid #4a4a2a;border-radius:6px;padding:14px;width:280px;max-width:82vw;display:flex;flex-direction:column;gap:8px;align-items:center;margin:8px 0}
+.mpCard.hd{display:none}
+.mpCard h2{font-size:11px;color:#8a8060;letter-spacing:1px;margin:0}
+.mpCard input{width:100%;padding:9px;border-radius:4px;border:1px solid #4a4a2a;background:rgba(20,22,12,.9);color:#c8bf94;font-size:13px;text-align:center;font-family:monospace}
+.mpAc{border-color:#d4a832 !important;color:#d4a832 !important}
+.modeBt{width:56px;padding:10px 0}
+.modeBt.ac{border-color:#d4a832 !important;color:#d4a832 !important;background:rgba(212,168,50,.15) !important}
+#mpStatus{font-size:11px;color:#8a8060;text-align:center;min-height:16px;max-width:80vw}
+#mpPlayerList{font-size:11px;color:#c8bf94;width:100%;display:flex;flex-direction:column;gap:4px}
+.mpPlItem{display:flex;align-items:center;gap:6px;padding:4px 8px;background:rgba(0,0,0,.2);border-radius:3px}
+.mpPlItem img{width:20px;height:20px;border-radius:50%;object-fit:cover}
+.mpDot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+</style>
+
+
+
+
+
+
+<script>window.WAR_SERVER_URL="wss://GANTI-DENGAN-DOMAIN-RAILWAY.up.railway.app";</script>
+
+<script>window.WAR_SERVER_URL="wss://game-production-8723.up.railway.app";</script>
+<script src="https://cdn.jsdelivr.net/gh/yuyuwahwah3-hue/game@main/lobby.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/yuyuwahwah3-hue/game@main/game-logic.js"></script>
+</body>
+</html>
