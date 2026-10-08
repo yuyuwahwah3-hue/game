@@ -212,8 +212,12 @@ function startRoom(room) {
     for (var i=0;i<8;i++) mpPlayers[i] = __players[i] ? {name:__players[i].name, photo:null, bot:__bots[i]} : null;
     mpEnterGame();
   `, sb);
+  // Kirim data medan (air laut + zona rintangan) SEKALI di awal - dipakai client utk PREDIKSI GERAK
+  // sendiri (client-side prediction): client hitung kecepatan bidak sendiri persis spt server
+  // (lihat isWater/zoneSpd di sim.js), supaya gerakan mulus walau snapshot server telat/jitter.
+  const water = vm.runInContext("({b64:WATER_B64, cols:WATER_COLS, rows:WATER_ROWS, cell:WATER_CELL, spd:WATER_SPD})", sb);
   broadcast(room, { type: "start", room: room.id, mode: room.mode, teamSize: room.teamSize,
-    zones: vm.runInContext("__zonesForClient()", sb), players: roomPublicPlayers(room) });
+    zones: vm.runInContext("__zonesForClient()", sb), water, players: roomPublicPlayers(room) });
   const dt = 1 / TICK_HZ;
   room.tickTimer = setInterval(() => tickRoom(room, dt), 1000 / TICK_HZ);
   console.log(`[room ${room.id}] MULAI ${room.mode} ${room.teamSize}v${room.teamSize} (bot: ${room.bots.filter(Boolean).length}). Room aktif: ${activeRoomCount()}`);
@@ -254,7 +258,10 @@ function sendSnapshot(room) {
       var p=pc[i];
       if(!p.al||p.hidden) continue;
       ids.push(i);
-      out.push([Math.round(p.x*10)/10, Math.round(p.y*10)/10, Math.round(p.a*100)/100, p.team==='A'?1:0, p.i, Math.round(p.hp), Math.round(p.mhp), p.gen?1:0, p.owner|0, p.hf>0?1:0, p.ord?1:0]);
+      // Tambahan utk prediksi gerak client: gtx/gty (tujuan saat ini, null kalau diam) + offset formasi
+      // (p.ox/p.oy, krn tujuan SEBENARNYA bidak dlm formasi = gtx+ox, gty+oy - lihat orderMove/update server).
+      var hasOrd=!!p.ord, gtx=hasOrd?Math.round((p.gtx+p.ox)*10)/10:null, gty=hasOrd?Math.round((p.gty+p.oy)*10)/10:null;
+      out.push([Math.round(p.x*10)/10, Math.round(p.y*10)/10, Math.round(p.a*100)/100, p.team==='A'?1:0, p.i, Math.round(p.hp), Math.round(p.mhp), p.gen?1:0, p.owner|0, p.hf>0?1:0, hasOrd?1:0, gtx, gty]);
     }
     var t=[]; for (var k=0;k<tr.length;k++) t.push(tr[k].tm||'');
     var cA=0,cB=0; for (var q=0;q<tr.length;q++){ if(tr[q].tm==='A')cA++; else if(tr[q].tm==='B')cB++; }

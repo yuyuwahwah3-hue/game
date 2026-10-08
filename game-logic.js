@@ -23,13 +23,23 @@ var mpWs=null,mpPlayers=new Array(8).fill(null),mpPhotoImgs=new Array(8).fill(nu
 var pgens=new Array(8).fill(null); // referensi jenderal tiap owner (diisi dari snapshot)
 var mpRespawnLeft=new Array(8).fill(0),mpGameMin=0;
 var mpMode="pvp",mpTeamSize=4; // diisi dari pilihan lobi: "pvp"|"ai", ukuran tim 1-4
-var mpSnapPrev=null,mpSnapCur=null,mpSnapTime=0,mpSnapInterval=100;
-// Interpolasi: gambar bidak di posisi 'agak lampau' (mpRenderDelay) di antara 2 snapshot yg sudah diterima,
-// sehingga selalu ada 2 titik utk digeser LURUS. Delay menyesuaikan jitter jaringan secara otomatis.
-var mpHist=[];                 // riwayat snapshot: {t:waktu terima(ms), m:{id:[x,y,a]}}
-var mpRenderDelay=140;         // ms; dinaikkan otomatis kalau jaringan bergoyang, diturunkan pelan kalau stabil
-var mpLastArrive=0,mpJitter=0; // utk hitung goyangan jaringan
+var mpSnapCur=null,mpSnapTime=0; // snapshot terakhir dari server (dipakai mpInterpolate utk tau ids yg terlihat)
 var mpHudDirty=false;
+var mpWaterGrid=null,mpWaterCols=0,mpWaterRows=0,mpWaterCell=100,mpWaterSpd=0.4;
+var MP_MS=50; // HARUS SAMA PERSIS dgn MS di server/sim.js - kecepatan dasar bidak (px/detik)
+function mpIsWater(x,y){
+ if(!mpWaterGrid)return false;
+ var gx=Math.floor(x/mpWaterCell),gy=Math.floor(y/mpWaterCell);
+ if(gx<0||gy<0||gx>=mpWaterCols||gy>=mpWaterRows)return false;
+ var bitIdx=gy*mpWaterCols+gx,byteV=mpWaterGrid[bitIdx>>3];
+ return ((byteV>>(bitIdx&7))&1)===1;
+}
+function mpZoneSpd(x,y){
+ if(!hz)return 1;
+ for(var i=0;i<hz.length;i++){var z=hz[i];if(z.t!=="lumpur")continue;var dx=x-z.x,dy=y-z.y;if(dx*dx+dy*dy<z.r*z.r)return 0.55}
+ return 1;
+}
+function mpClientSpeed(x,y){ return MP_MS*mpZoneSpd(x,y)*(mpIsWater(x,y)?mpWaterSpd:1) }
 var SERVER_URL=(window.WAR_SERVER_URL||"wss://GANTI-DENGAN-DOMAIN-RAILWAY.up.railway.app");
 
 function mpLoadPhotoImgs(){
@@ -82,6 +92,14 @@ function mpConnect(name,photo,vs,teamSize,joinMode,onStatus){
    mpEnterGame();
    // Zona api/lumpur/air suci dari server -> isi hz agar render() lama menggambarnya
    hz=(m.zones||[]).map(function(z){return {t:z.t,x:z.x,y:z.y,r:z.r,poly:z.poly.map(function(q){return {x:q[0],y:q[1]}})}});
+   // Data medan (air laut) dari server - dipakai mpClientSpeed() utk PREDIKSI GERAK (hitung kecepatan
+   // sendiri persis spt server, supaya bidak tak pernah "kehabisan tujuan" nunggu snapshot berikutnya).
+   if(m.water){
+    mpWaterCols=m.water.cols;mpWaterRows=m.water.rows;mpWaterCell=m.water.cell;mpWaterSpd=m.water.spd;
+    var bin=atob(m.water.b64),by=new Uint8Array(bin.length);
+    for(var wi=0;wi<bin.length;wi++)by[wi]=bin.charCodeAt(wi);
+    mpWaterGrid=by;
+   }
   }
   else if(m.type==="state"){ mpOnSnapshot(m) }
   else if(m.type==="end"){ mpShowGameEnd(m.reason) }
@@ -97,33 +115,28 @@ function mpShowGameEnd(reason){
 // Snapshot dari server -> bangun ulang pc (hanya bidak yg TERLIHAT). Posisi diinterpolasi di mpInterpolate().
 function mpOnSnapshot(m){
  var now=performance.now();
- if(mpSnapCur){ mpSnapInterval=Math.max(40,Math.min(300,now-mpSnapTime)); }
- mpSnapPrev=mpSnapCur;
- var idx={};
- for(var i=0;i<m.ids.length;i++)idx[m.ids[i]]=m.p[i];
- mpSnapCur={ids:m.ids,p:m.p,idx:idx};
+ var snapDt=mpSnapTime?Math.max(0.02,Math.min(0.3,(now-mpSnapTime)/1000)):0.1; // jarak wkt antar snapshot, utk ekstrapolasi
  mpSnapTime=now;
- var pm={};for(var hi=0;hi<m.ids.length;hi++){var dd=m.p[hi];pm[m.ids[hi]]=[dd[0],dd[1],dd[2]]}
- mpHist.push({t:now,m:pm});
- if(mpHist.length>6)mpHist.shift();
- if(mpLastArrive){
-  var gap=now-mpLastArrive,dev=Math.abs(gap-mpSnapInterval);
-  mpJitter=mpJitter*0.9+dev*0.1;                       // rata-rata bergerak simpangan jeda antar snapshot
-  var want=Math.max(110,Math.min(400,mpSnapInterval*1.3+mpJitter*2.5));
-  mpRenderDelay+=(want-mpRenderDelay)*0.05;            // naik/turun pelan supaya tidak terasa berubah-ubah
- }
- mpLastArrive=now;
  for(var k=0;k<m.t.length&&k<tr.length;k++)tr[k].tm=m.t[k]||"n";
  // Siapkan pc tetap (indeks = indeks asli server, agar sel/perintah cocok). Bidak tak terlihat => hidden.
+ mpSnapCur={ids:m.ids};
+ var idx={};for(var i=0;i<m.ids.length;i++)idx[m.ids[i]]=m.p[i];
  var maxId=0;for(var q=0;q<m.ids.length;q++)if(m.ids[q]>maxId)maxId=m.ids[q];
  for(var j=0;j<m.gens.length;j++){var g=m.gens[j];if(g&&g[2]>maxId)maxId=g[2]}
- while(pc.length<=maxId)pc.push({x:0,y:0,a:0,t:"B",i:-1,hp:0,mhp:100,gen:false,al:false,hidden:true,owner:0,team:"B",hf:0,ord:null,tgt:null,orbiting:null,rt:false,obey:false,form:null,formAng:0,mem:0});
+ while(pc.length<=maxId)pc.push({x:0,y:0,a:0,t:"B",i:-1,hp:0,mhp:100,gen:false,al:false,hidden:true,owner:0,team:"B",hf:0,ord:null,tgt:null,orbiting:null,rt:false,obey:false,form:null,formAng:0,mem:0,gtx:null,gty:null,srvX:0,srvY:0,srvA:0});
  for(var n=0;n<pc.length;n++){ if(!idx[n]){ pc[n].al=false;pc[n].hidden=true } }
  for(var r=0;r<m.ids.length;r++){
   var id=m.ids[r],d=m.p[r],o=pc[id];
-  o.tx=d[0];o.ty=d[1];o.ta=d[2];
-  if(!o.al||o.hidden){o.x=d[0];o.y=d[1];o.a=d[2]} // baru muncul: langsung di posisi
+  var wasAl=o.al&&!o.hidden;
+  // srvX/Y/A = posisi ASLI terakhir dari server (kebenaran utk koreksi). x/y/a = posisi PREDIKSI yg
+  // digambar (digerakkan sendiri oleh client tiap frame di mpInterpolate, bkn cuma interpolasi 2 titik).
+  // srvX/Y = posisi ASLI dari server, apa adanya (TANPA ekstrapolasi tambahan - client sudah
+  // memprediksi gerak sendiri lewat gtx/gty di mpInterpolate, menambah ekstrapolasi di SINI JUGA
+  // cuma menggandakan prediksi & menyebabkan lompatan tiap snapshot baru tiba, bukan mulus).
+  o.srvX=d[0];o.srvY=d[1];o.srvA=d[2];
+  if(!wasAl){o.x=d[0];o.y=d[1];o.a=d[2];o.px=d[0];o.py=d[1];o.corX=0;o.corY=0} // baru muncul/respawn: langsung di posisi
   o.t=d[3]?"A":"B";o.team=o.t;o.i=d[4];o.hp=d[5];o.mhp=d[6];o.gen=!!d[7];o.owner=d[8];o.hf=d[9]?0.2:0;o.ord=d[10]?"move":null;
+  o.gtx=d[11];o.gty=d[12];
   o.al=true;o.hidden=false;
  }
  for(var oi=0;oi<8;oi++){ var gg=m.gens[oi]; pgens[oi]=(gg&&gg[0])?pc[gg[2]]:null; }
@@ -140,26 +153,45 @@ function mpOnSnapshot(m){
  if(m.toasts){for(var ti=0;ti<m.toasts.length;ti++)tK(m.toasts[ti])}
 }
 
-// Interpolasi halus antar snapshot (dipanggil tiap frame render)
-function mpInterpolate(){
- if(mpHist.length<2)return;
- var rt=performance.now()-mpRenderDelay;              // waktu yg ingin ditampilkan (sedikit di masa lalu)
- // cari dua snapshot yg mengapit rt
- var h0=mpHist[0],h1=mpHist[1],i;
- for(i=0;i<mpHist.length-1;i++){ if(mpHist[i+1].t>=rt){h0=mpHist[i];h1=mpHist[i+1];break} h0=mpHist[i];h1=mpHist[i+1] }
- var span=h1.t-h0.t; var k=span>0?(rt-h0.t)/span:1;
- // k<0: kita lebih lama dari riwayat -> tahan di h0. k>1: paket telat -> ekstrapolasi terbatas (maks 25%) lalu tahan
- if(k<0)k=0; else if(k>1.25)k=1.25;
- var ids=mpSnapCur.ids;
+// ====== PREDIKSI GERAK CLIENT (client-side prediction) ======
+// Tiap bidak bergerak sendiri (BUKAN nunggu snapshot) menuju gtx/gty dgn kecepatan medan yg
+// dihitung client sendiri - bidak TERUS jalan mulus walau snapshot server (10x/detik) telat/hilang.
+// Koreksi ke srvX/Y (posisi asli server) dibuat SANGAT PELAN & konstan (MP_CORRECT_RATE rendah):
+// diuji sistematis beberapa nilai, rate rendah (2-4/detik) terbukti PALING MULUS (nyaris tak pernah
+// memicu lompatan terlihat) justru krn koreksinya nyaris tak kerasa - cukup utk mencegah penyimpangan
+// menumpuk tanpa batas dlm jangka panjang, tanpa pernah terasa sbg "tarikan" di gerakan sesaat.
+// Snap instan HANYA utk penyimpangan ekstrem (respawn/teleport sungguhan), lihat MP_SNAP_THRESHOLD.
+var MP_CORRECT_RATE=3; // per detik - JANGAN dinaikkan tanpa pengujian; nilai lebih tinggi terbukti
+                       // menciptakan lompatan lebih besar & lebih sering (sudah diuji 2/4/6/8/12/16/24)
+var MP_SNAP_THRESHOLD=250; // px; selisih di atas ini dianggap teleport (respawn dll), snap instan
+
+function mpInterpolate(dt){
+ dt=dt||(1/60);
+ var ids=mpSnapCur?mpSnapCur.ids:[];
  for(var n=0;n<ids.length;n++){
-  var id=ids[n],o=pc[id],a=h0.m[id],b=h1.m[id];
-  if(!o||!b)continue;
-  if(!a){o.x=b[0];o.y=b[1];o.a=b[2];continue}      // baru muncul di snapshot ini: langsung di tempat
-  var dx=b[0]-a[0],dy=b[1]-a[1];
-  if(dx*dx+dy*dy>90000){o.x=b[0];o.y=b[1];o.a=b[2];continue} // lompat jauh (respawn/teleport): jangan diseret
-  o.x=a[0]+dx*k;o.y=a[1]+dy*k;
-  var da=b[2]-a[2];while(da>Math.PI)da-=Math.PI*2;while(da<-Math.PI)da+=Math.PI*2;
-  o.a=a[2]+da*k;
+  var id=ids[n],o=pc[id];
+  if(!o||!o.al||o.hidden)continue;
+
+  // PREDIKSI: majukan ke arah gtx/gty dgn kecepatan medan (air/lumpur dihitung sendiri oleh client).
+  if(o.gtx!=null&&o.gty!=null){
+   var ddx=o.gtx-o.x,ddy=o.gty-o.y,dist=Math.sqrt(ddx*ddx+ddy*ddy);
+   if(dist>2){
+    var spd=mpClientSpeed(o.x,o.y),step=spd*dt;
+    if(step>=dist){o.x=o.gtx;o.y=o.gty}
+    else{o.x+=ddx/dist*step;o.y+=ddy/dist*step}
+    o.a=Math.atan2(ddy,ddx);
+   }
+  }
+
+  // KOREKSI: tarikan SANGAT pelan & konstan ke posisi server, mencegah penyimpangan menumpuk tanpa
+  // pernah terasa sbg sentakan (rate rendah = tarikan per frame sangat kecil, hampir tak terlihat).
+  var cdx=o.srvX-o.x,cdy=o.srvY-o.y,cdist2=cdx*cdx+cdy*cdy;
+  if(cdist2>MP_SNAP_THRESHOLD*MP_SNAP_THRESHOLD){
+   o.x=o.srvX;o.y=o.srvY;o.a=o.srvA; // penyimpangan ekstrem (respawn/teleport): snap instan
+  } else if(cdist2>0.25){
+   var pull=Math.min(1,MP_CORRECT_RATE*dt);
+   o.x+=cdx*pull;o.y+=cdy*pull;
+  }
  }
 }
 
@@ -2585,8 +2617,10 @@ function gl(t){
 
  lt=t;
 
- // Client TIDAK menjalankan simulasi (update). Server yg authoritative. Client hanya interpolasi + render.
- mpInterpolate();
+ // Client TIDAK menjalankan simulasi penuh (update/combat/AI) - server tetap authoritative utk itu.
+ // Tapi utk GERAK, client memprediksi sendiri tiap frame (lihat mpInterpolate) spy mulus walau
+ // snapshot server (10x/detik) telat/jitter - server cuma MENGOREKSI kalau prediksi meleset.
+ mpInterpolate(dt);
  mpTickHud();
 
  render();
